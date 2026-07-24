@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NBA 经理模拟器</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- 启动界面：选择球队 -->
+        <div id="startup-screen" class="screen active">
+            <div class="startup-box">
+                <h1 class="logo">🏀 NBA 经理模拟器</h1>
+                <p class="subtitle">打造你的王朝 —— 交易、选秀、执教，争夺总冠军</p>
+                <div id="continue-box" class="continue-box" style="display:none">
+                    <div class="card-title">继续上一次游戏</div>
+                    <div id="continue-info" class="continue-info"></div>
+                    <div style="display:flex;gap:8px;margin-top:10px">
+                        <button id="continue-btn" class="btn btn-primary" style="flex:1">▶ 继续游戏</button>
+                        <button id="open-savemgr-btn" class="btn">📁 存档管理</button>
+                    </div>
+                </div>
+                <div class="startup-step">
+                    <h2>选择你执教的球队</h2>
+                    <div class="conference-tabs">
+                        <button class="conf-tab active" data-conf="East">东部联盟</button>
+                        <button class="conf-tab" data-conf="West">西部联盟</button>
+                    </div>
+                    <div id="team-select-grid" class="team-grid"></div>
+                </div>
+                <div class="startup-step">
+                    <h2>经理姓名</h2>
+                    <input type="text" id="manager-name" class="text-input" placeholder="输入你的名字" value="GM">
+                </div>
+                <button id="start-game-btn" class="btn btn-primary btn-large" disabled>开始职业生涯</button>
+            </div>
+        </div>
+
+        <!-- 主游戏界面 -->
+        <div id="game-screen" class="screen">
+            <!-- 顶部状态栏 -->
+            <header class="topbar">
+                <div class="topbar-left">
+                    <span class="topbar-logo">🏀 NBA GM</span>
+                    <span id="team-badge" class="team-badge"></span>
+                </div>
+                <div class="topbar-center">
+                    <span id="season-info" class="season-info"></span>
+                    <span id="phase-info" class="phase-info"></span>
+                </div>
+                <div class="topbar-right">
+                    <span id="record-info" class="record-info"></span>
+                    <button id="advance-btn" class="btn btn-primary">▶</button>
+                </div>
+            </header>
+
+            <div class="layout">
+                <!-- 侧边导航（桌面端） -->
+                <nav class="sidebar">
+                    <button class="nav-item active" data-view="dashboard">📊 仪表盘</button>
+                    <button class="nav-item" data-view="roster">👥 阵容</button>
+                    <button class="nav-item" data-view="trade">🔄 交易</button>
+                    <button class="nav-item" data-view="freeagents">💰 自由球员</button>
+                    <button class="nav-item" data-view="schedule">📅 赛程</button>
+                    <button class="nav-item" data-view="standings">🏆 排名</button>
+                    <button class="nav-item" data-view="stats">📈 数据</button>
+                    <button class="nav-item" data-view="draft" id="nav-draft">🎓 选秀</button>
+                    <button class="nav-item" data-view="league">🌐 联盟</button>
+                </nav>
+
+                <!-- 主内容区 -->
+                <main class="main-content" id="main-content">
+                    <!-- 视图动态渲染 -->
+                </main>
+            </div>
+
+            <!-- 底部导航栏（手机端） -->
+            <nav class="bottombar">
+                <button class="bottombar-item active" data-view="dashboard"><span class="icon">📊</span>仪表盘</button>
+                <button class="bottombar-item" data-view="roster"><span class="icon">👥</span>阵容</button>
+                <button class="bottombar-item" data-view="trade"><span class="icon">🔄</span>交易</button>
+                <button class="bottombar-item" data-view="schedule"><span class="icon">📅</span>赛程</button>
+                <button class="bottombar-item" data-view="standings"><span class="icon">🏆</span>排名</button>
+                <button class="bottombar-item" data-view="stats"><span class="icon">📈</span>数据</button>
+                <button class="bottombar-item" data-view="more" id="nav-more"><span class="icon">⋮</span>更多</button>
+            </nav>
+        </div>
+    </div>
+
+    <!-- 模态框 -->
+    <div id="modal-overlay" class="modal-overlay">
+        <div id="modal-box" class="modal-box"></div>
+    </div>
+
+    <!-- 通知容器 -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <script src="js/data/teams.js"></script>
+    <script src="js/data/players.js"></script>
+    <script src="js/data/rookies.js"></script>
+    <script src="js/engine/simulation.js"></script>
+    <script src="js/engine/trade.js"></script>
+    <script src="js/engine/draft.js"></script>
+    <script src="js/engine/season.js"></script>
+    <script src="js/engine/save.js"></script>
+    <script src="js/ui/app.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
