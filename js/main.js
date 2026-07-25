@@ -8,6 +8,9 @@
         const teams = window.TEAMS_DATA.filter(t => t.conf === conf);
         grid.innerHTML = teams.map(t => `
             <div class="team-select-card" data-team="${t.id}">
+                <div class="card-logo">
+                    <img src="${t.logo}" class="team-logo" width="64" height="64" alt="${t.abbr}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='inline-flex'"><span class="team-logo-fallback" style="display:none;width:64px;height:64px;background:${t.color};color:#fff;border-radius:50%;align-items:center;justify-content:center;font-size:24px;font-weight:700">${t.abbr}</span>
+                </div>
                 <div class="abbr" style="color:${t.color}">${t.abbr}</div>
                 <div class="name">${t.city}${t.name}</div>
             </div>
@@ -37,6 +40,15 @@
         const box = document.getElementById("continue-box");
         const info = document.getElementById("continue-info");
         if (meta) {
+            // 启动时校验名单是否过期；过期则静默清除，不显示"继续游戏"
+            const state = SaveEngine.loadAuto();
+            if (isRosterOutdated(state)) {
+                SaveEngine.deleteAuto();
+                // 顺手把所有手动槽位也清掉，避免用户读到旧名单
+                SaveEngine.clearAll();
+                box.style.display = "none";
+                return;
+            }
             box.style.display = "block";
             info.innerHTML = `
                 <div style="display:flex;align-items:center;gap:10px;padding:12px;background:var(--bg-elevated);border-radius:8px">
@@ -52,12 +64,33 @@
         }
     }
 
-    document.getElementById("continue-btn").addEventListener("click", () => {
-        const state = SaveEngine.loadAuto();
-        if (!state) { alert("自动存档已损坏或不存在"); return; }
+    // 当前期望的名单版本号；与 app.js init 时写入 state.rosterVersion 对齐
+    const CURRENT_ROSTER_VERSION = 2027;
+
+    // 校验存档名单是否为最新：依据存档的 rosterVersion 字段判断，避免依赖具体球员站位
+    // （旧实现用"勒布朗@PHI"判断，玩家把勒布朗交易走后会误判为旧名单并清空全部存档）
+    function isRosterOutdated(state) {
+        if (!state) return true;
+        // 缺少字段或版本号低于当前期望版本，均判定为旧存档
+        return !state.rosterVersion || state.rosterVersion < CURRENT_ROSTER_VERSION;
+    }
+
+    function enterGameWithState(state, onOutdated) {
+        if (isRosterOutdated(state)) {
+            alert("该存档使用的是旧版球员名单（2026-27 赛季前），已自动清除。请开始新游戏以加载最新名单。");
+            if (typeof onOutdated === "function") onOutdated();
+            return false;
+        }
         document.getElementById("startup-screen").classList.remove("active");
         document.getElementById("game-screen").classList.add("active");
         App.loadState(state);
+        return true;
+    }
+
+    document.getElementById("continue-btn").addEventListener("click", () => {
+        const state = SaveEngine.loadAuto();
+        if (!state) { alert("自动存档已损坏或不存在"); return; }
+        enterGameWithState(state, () => { SaveEngine.deleteAuto(); refreshContinueBox(); });
     });
 
     document.getElementById("open-savemgr-btn").addEventListener("click", () => {
@@ -118,9 +151,7 @@
                 const state = SaveEngine.loadAuto();
                 if (!state) { alert("读取失败"); return; }
                 App.closeModal();
-                document.getElementById("startup-screen").classList.remove("active");
-                document.getElementById("game-screen").classList.add("active");
-                App.loadState(state);
+                enterGameWithState(state, () => { SaveEngine.deleteAuto(); refreshContinueBox(); });
             });
             const autoDel = document.querySelector("#modal-box [data-delauto]");
             if (autoDel) autoDel.addEventListener("click", () => {
@@ -132,9 +163,7 @@
                     const state = SaveEngine.loadSlot(id);
                     if (!state) { alert("读取失败"); return; }
                     App.closeModal();
-                    document.getElementById("startup-screen").classList.remove("active");
-                    document.getElementById("game-screen").classList.add("active");
-                    App.loadState(state);
+                    enterGameWithState(state, () => { SaveEngine.deleteSlot(id); show(); refreshContinueBox(); });
                 });
             });
             document.querySelectorAll("#modal-box [data-delslot]").forEach(el => {
@@ -173,6 +202,9 @@
 
     // 推进按钮
     document.getElementById("advance-btn").addEventListener("click", () => App.advance());
+
+    // 一键快进按钮：常规赛一键模拟至季后赛；季后赛/总决赛一键模拟本轮
+    document.getElementById("fast-btn").addEventListener("click", () => App.fastAdvance());
 
     // 模态框点击外部关闭
     document.getElementById("modal-overlay").addEventListener("click", e => {

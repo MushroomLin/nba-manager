@@ -2,7 +2,7 @@
 //
 // 设计:
 //   1. 自动存档 (AUTO_KEY): 每次推进比赛/交易/选秀/签约后自动保存，无感续玩
-//   2. 手动槽位 (SLOT_PREFIX + 1..3): 玩家可在存档管理界面手动存档/读档/删除
+//   2. 手动槽位 (SLOT_PREFIX + 1..5): 玩家可在存档管理界面手动存档/读档/删除
 //   3. 序列化时移除可重建字段 (teamsPlayers/standings), 减小体积并避免引用不一致
 //   4. 每个存档带 meta 元数据 (经理/球队/赛季/战绩/时间), 用于列表展示
 
@@ -11,7 +11,7 @@ const SaveEngine = (() => {
     const AUTO_KEY = "nba_mgr_autosave";
     const SLOT_PREFIX = "nba_mgr_slot_";
     const VERSION = 1;
-    const SLOT_COUNT = 3;
+    const SLOT_COUNT = 5;
 
     // 构建存档元数据（用于列表展示，无需解析整个 state）
     function buildMeta(state) {
@@ -137,6 +137,14 @@ const SaveEngine = (() => {
         localStorage.removeItem(SLOT_PREFIX + slotId);
     }
 
+    // 清除所有存档（自动存档 + 全部手动槽位）
+    function clearAll() {
+        localStorage.removeItem(AUTO_KEY);
+        for (let i = 1; i <= SLOT_COUNT; i++) {
+            localStorage.removeItem(SLOT_PREFIX + i);
+        }
+    }
+
     function formatTime(ts) {
         if (!ts) return "-";
         const d = new Date(ts);
@@ -151,7 +159,7 @@ const SaveEngine = (() => {
 
     return {
         autoSave, loadAuto, getAutoMeta, deleteAuto,
-        saveSlot, loadSlot, getSlotMeta, listSlots, deleteSlot,
+        saveSlot, loadSlot, getSlotMeta, listSlots, deleteSlot, clearAll,
         formatTime, phaseLabel, buildMeta,
         SLOT_COUNT,
     };

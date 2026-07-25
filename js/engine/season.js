@@ -44,8 +44,10 @@ const SeasonEngine = (() => {
                     count = ((ti + xi) % 5 < 3) ? 4 : 3;
                 }
 
-                // 主客场均衡分配
-                const homeForT = Math.ceil(count / 2);
+                // 主客场均衡分配：3 场对决用 pairKey 哈希决定哪方多 1 主场，
+                // 使每队 4 次 3 场对决中约 2 次 2H / 2 次 1H，避免固定 2 主 1 客
+                const flip = (hashStr(key) % 2 === 0);
+                const homeForT = count === 3 ? (flip ? 2 : 1) : Math.ceil(count / 2);
                 for (let g = 0; g < count; g++) {
                     const homeIsT = g < homeForT;
                     rawGames.push({
@@ -104,6 +106,10 @@ const SeasonEngine = (() => {
     function setupPlayoffs(standings) {
         const east8 = standings.east.slice(0, 8);
         const west8 = standings.west.slice(0, 8);
+        // 给每个种子附加 seed 字段（standings 已按战绩排序，index+1 即种子号）
+        const withSeed = (seeded) => seeded.map((entry, i) => ({ ...entry, seed: i + 1 }));
+        const eastSeeded = withSeed(east8);
+        const westSeeded = withSeed(west8);
         // 1v8, 4v5, 3v6, 2v7
         const pairings = (seeded) => [
             { high: seeded[0], low: seeded[7] },
@@ -112,8 +118,8 @@ const SeasonEngine = (() => {
             { high: seeded[1], low: seeded[6] },
         ];
         return {
-            east: pairings(east8),
-            west: pairings(west8),
+            east: pairings(eastSeeded),
+            west: pairings(westSeeded),
         };
     }
 
@@ -139,18 +145,23 @@ const SeasonEngine = (() => {
     function nextRound(results) {
         const winners = results.map(r => r.winner);
         if (winners.length <= 1) return [];
+        // seed 升序排序辅助：seed 缺失时回退到战绩（winRate 降序）
+        const bySeed = (a, b) => {
+            const sa = a.seed != null ? a.seed : 99;
+            const sb = b.seed != null ? b.seed : 99;
+            if (sa !== sb) return sa - sb;
+            return (b.winRate || 0) - (a.winRate || 0);
+        };
         if (winners.length === 4) {
-            // 首轮胜者对应种子 [1,4,3,2]，重排后 1v4 / 2v3
-            const seedOrder = [1, 4, 3, 2];
-            const indexed = winners.map((w, i) => ({ team: w, seed: seedOrder[i] }));
-            indexed.sort((a, b) => a.seed - b.seed);
+            // 按真实 seed 升序排序，1v4 / 2v3 配对，seed 小的为 high（有主场优势）
+            const sorted = [...winners].sort(bySeed);
             return [
-                { high: indexed[0].team, low: indexed[3].team },
-                { high: indexed[1].team, low: indexed[2].team },
+                { high: sorted[0], low: sorted[3] },
+                { high: sorted[1], low: sorted[2] },
             ];
         } else {
-            // 2 个胜者 → 1 组，主场优势给战绩更好者
-            const sorted = [...winners].sort((a, b) => (b.winRate || 0) - (a.winRate || 0));
+            // 2 个胜者 → 1 组，主场优势给 seed 更小（或战绩更好）者
+            const sorted = [...winners].sort(bySeed);
             return [{ high: sorted[0], low: sorted[1] }];
         }
     }
@@ -212,6 +223,16 @@ const SeasonEngine = (() => {
     function generateFreeAgents(count = 15) {
         const proto = window.ROOKIE_PROTOTYPES;
         const fas = [];
+        const usedNames = new Set();
+        function genName() {
+            for (let attempt = 0; attempt < 30; attempt++) {
+                const fn = proto.firstNames[Math.floor(Math.random() * proto.firstNames.length)];
+                const ln = proto.lastNames[Math.floor(Math.random() * proto.lastNames.length)];
+                const full = `${fn}·${ln}`;
+                if (!usedNames.has(full)) { usedNames.add(full); return full; }
+            }
+            return `${proto.firstNames[0]}·${proto.lastNames[0]}_${Math.floor(Math.random()*99)}`;
+        }
         for (let i = 0; i < count; i++) {
             const pos = pick(proto.positions);
             const profile = window.ROOKIE_POS_PROFILES[pos];
@@ -220,7 +241,7 @@ const SeasonEngine = (() => {
             const v = () => randInt(-5, 5);
             const p = {
                 id: `fa_${Date.now()}_${i}_${Math.random().toString(36).slice(2,7)}`,
-                n: pick(proto.names) + " " + (Math.random() < 0.3 ? "二世" : ""),
+                n: genName(),
                 t: null,
                 p: pos, a: age, o: ovr, pot: ovr + randInt(0, 3),
                 sal: TradeEngine.salaryForOvr(ovr) * (0.7 + Math.random() * 0.4),
@@ -240,8 +261,18 @@ const SeasonEngine = (() => {
     }
 
     // 签约自由球员（加入球队，需有名额且薪资空间/特例）
-    function signFreeAgent(teamPlayers, player) {
+    // 返回 {ok, reason}；可选 teamId 用于设置球员归属，缺失时从现有名单推断
+    function signFreeAgent(teamPlayers, player, teamId) {
         if (teamPlayers.length >= 15) return { ok: false, reason: "名单已满(15人)" };
+        // 薪资空间检查：当前总薪资 + 球员薪资 不得超过工资帽
+        const cap = window.SALARY_CAP;
+        const currentSalary = teamPlayers.reduce((s, p) => s + (p.sal || 0), 0);
+        if (cap != null && currentSalary + (player.sal || 0) > cap) {
+            return { ok: false, reason: "薪资空间不足" };
+        }
+        // 设置球队归属：优先用传入的 teamId，否则从现有名单推断
+        const tid = teamId != null ? teamId : (teamPlayers.find(p => p && p.t != null) || {}).t;
+        if (tid != null) player.t = tid;
         player.isFreeAgent = false;
         teamPlayers.push(player);
         return { ok: true };
@@ -262,17 +293,25 @@ const SeasonEngine = (() => {
     function clamp(v, mn, mx) { return Math.max(mn, Math.min(mx, v)); }
     function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
     function shuffle(arr) { for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; } }
+    // 简单字符串哈希（用于赛程主客场均衡分配的确定性 flip）
+    function hashStr(s) {
+        let h = 0;
+        for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+        return Math.abs(h);
+    }
 
     // ================================================================
     //  赛季奖项评选 AwardsEngine
     //  规则: 基于常规赛累积数据 + 球队战绩 + 能力值综合评分
-    //    MVP: 进攻数据为主 + 球队胜率加权
-    //    DPOY: 防守数据(抢断/盖帽) + 防守能力 + 球队失分
-    //    ROY: 仅新秀参与，按综合数据
-    //    最佳阵容/防守阵/新秀阵: 各5人(2后场+3前场)
+    //    MVP / DPOY / ROY / 最佳第六人 / 进步最快球员
+    //    最佳阵容一阵/二阵/三阵 (各 2后场+3前场)
+    //    最佳防守一阵/二阵 (各 2后场+3前场)
+    //    最佳新秀一阵/二阵 (各 2后场+3前场)
     // ================================================================
     function computeAwards(state) {
         const candidates = [];
+        // 用于进步最快球员: 记录本赛季 ovr 与上赛季 ovr 的差值
+        const playerHistory = state.playerHistory || {};
         Object.entries(state.statAccum).forEach(([teamId, acc]) => {
             const teamRec = state.records[teamId] || { win: 0, loss: 0 };
             const gp = teamRec.win + teamRec.loss;
@@ -290,9 +329,18 @@ const SeasonEngine = (() => {
                 const mvpScore = efficiency * 1.0 + winRate * 22 + p.o * 0.15 + (fgPct - 0.45) * 30 + (tpPct - 0.35) * 10;
                 // 防守评分: 抢断/盖帽 + 防守能力 + 球队失分越少越好
                 const defScore = spg * 6 + bpg * 5 + p.de * 0.5 + p.re * 0.15 + winRate * 8;
+                // 第六人评分: 板凳出场(按 ovr 排序，前5为首发，其余为替补)
+                const sortedRoster = [...(state.teamsPlayers[teamId] || [])].sort((a, b) => b.o - a.o);
+                const isBench = p.isFiller || !sortedRoster.slice(0, 5).includes(p);
+                const sixManScore = efficiency * 1.1 + (isBench ? 5 : -10) + p.o * 0.1;
+                // 进步最快: 与上赛季 ovr 差值 + 数据提升
+                const hist = playerHistory[pid];
+                const lastOvr = hist && hist.length ? hist[hist.length - 1].ovr : p.o;
+                const ovrDelta = p.o - lastOvr;
+                const mipScore = ovrDelta * 5 + efficiency * 0.5;
                 candidates.push({
                     player: p, teamId, ppg, rpg, apg, spg, bpg, tpg, fgPct, tpPct, gp: s.gp, winRate,
-                    mvpScore, defScore,
+                    mvpScore, defScore, sixManScore, mipScore, ovrDelta, isBench,
                 });
             });
         });
@@ -300,31 +348,67 @@ const SeasonEngine = (() => {
         const sorted = (arr, key, desc = true) => arr.slice().sort((a, b) => desc ? b[key] - a[key] : a[key] - b[key]);
         const mvpList = sorted(candidates, "mvpScore");
         const dpoyList = sorted(candidates, "defScore");
-        const royList = sorted(candidates.filter(c => c.player.isRookie || c.player.a <= 22), "mvpScore");
+        const royList = sorted(candidates.filter(c => c.player.isRookie === true), "mvpScore");
+        const sixManList = sorted(candidates.filter(c => c.isBench), "sixManScore");
+        const mipList = sorted(candidates.filter(c => {
+            if (c.ovrDelta < 2) return false;
+            // 排除上赛季已成名的超巨（hist 存在且 lastOvr>=82）
+            const h = playerHistory[c.player.id];
+            if (h && h.length && h[h.length - 1].ovr >= 82) return false;
+            return true;
+        }), "mipScore");
 
-        // 最佳阵容：2后场(PG/SG) + 3前场(SF/PF/C)
-        const guards = mvpList.filter(c => ["PG", "SG"].includes(c.player.p));
-        const forwards = mvpList.filter(c => ["SF", "PF", "C"].includes(c.player.p));
-        const allNBA = [...guards.slice(0, 2), ...forwards.slice(0, 3)];
-        // 最佳防守阵
-        const defGuards = dpoyList.filter(c => ["PG", "SG"].includes(c.player.p));
-        const defForwards = dpoyList.filter(c => ["SF", "PF", "C"].includes(c.player.p));
-        const allDefensive = [...defGuards.slice(0, 2), ...defForwards.slice(0, 3)];
-        // 最佳新秀阵
-        const allRookie = royList.slice(0, 5);
+        // 最佳阵容：每阵 2后场(PG/SG) + 3前场(SF/PF/C)，依次选出一阵/二阵/三阵
+        function pickAllNBATeams(sourceList, teamCount = 3) {
+            const teams = [];
+            const used = new Set();
+            for (let t = 0; t < teamCount; t++) {
+                const guards = sourceList.filter(c => !used.has(c.player.id) && ["PG", "SG"].includes(c.player.p));
+                const forwards = sourceList.filter(c => !used.has(c.player.id) && ["SF", "PF", "C"].includes(c.player.p));
+                const team = [...guards.slice(0, 2), ...forwards.slice(0, 3)];
+                team.forEach(c => used.add(c.player.id));
+                teams.push(team);
+            }
+            return teams;
+        }
+        const allNBATeams = pickAllNBATeams(mvpList, 3); // [一阵, 二阵, 三阵]
+        const allDefTeams = pickAllNBATeams(dpoyList, 2); // [防守一阵, 防守二阵]
+        const allRookieTeams = pickAllNBATeams(royList, 2); // [新秀一阵, 新秀二阵]
 
         return {
             year: state.year,
             mvp: mvpList[0] || null,
             dpoy: dpoyList[0] || null,
             roy: royList[0] || null,
-            allNBA: allNBA.map(c => c.player.id),
-            allDefensive: allDefensive.map(c => c.player.id),
-            allRookie: allRookie.map(c => c.player.id),
+            sixMan: sixManList[0] || null,
+            mip: mipList[0] || null,
+            // 最佳阵容一阵/二阵/三阵
+            allNBAFirst:  allNBATeams[0].map(c => c.player.id),
+            allNBASecond: allNBATeams[1].map(c => c.player.id),
+            allNBAThird:  allNBATeams[2].map(c => c.player.id),
+            // 最佳防守一阵/二阵
+            allDefFirst:  allDefTeams[0].map(c => c.player.id),
+            allDefSecond: allDefTeams[1].map(c => c.player.id),
+            // 最佳新秀一阵/二阵
+            allRookieFirst:  allRookieTeams[0].map(c => c.player.id),
+            allRookieSecond: allRookieTeams[1].map(c => c.player.id),
+            // 兼容旧字段
+            allNBA: allNBATeams[0].map(c => c.player.id),
+            allDefensive: allDefTeams[0].map(c => c.player.id),
+            allRookie: allRookieTeams[0].map(c => c.player.id),
             // 详情用于展示
             mvpTop5: mvpList.slice(0, 5),
             dpoyTop5: dpoyList.slice(0, 5),
             royTop5: royList.slice(0, 5),
+            sixManTop5: sixManList.slice(0, 5),
+            mipTop5: mipList.slice(0, 5),
+            allNBAFirstDetail:  allNBATeams[0],
+            allNBASecondDetail: allNBATeams[1],
+            allNBAThirdDetail:  allNBATeams[2],
+            allDefFirstDetail:  allDefTeams[0],
+            allDefSecondDetail: allDefTeams[1],
+            allRookieFirstDetail:  allRookieTeams[0],
+            allRookieSecondDetail: allRookieTeams[1],
         };
     }
 

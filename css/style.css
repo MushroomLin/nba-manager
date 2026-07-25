@@ -8,6 +8,7 @@
     --nba-blue-dark: #0f2657;
     --nba-red: #c8102e;
     --nba-red-light: #e8324a;
+    --accent-light: #e8324a;
     --court-wood: #c8804b;
 
     /* 界面色系 */
@@ -34,6 +35,7 @@
     /* 尺寸 */
     --topbar-h: 56px;
     --bottombar-h: 64px;
+    --radius: 8px;
     --radius-sm: 8px;
     --radius-md: 12px;
     --radius-lg: 16px;
@@ -259,6 +261,31 @@ body {
     box-shadow: var(--shadow-sm);
 }
 
+#fast-btn {
+    padding: 8px 12px;
+    font-size: 14px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-sm);
+}
+#fast-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* 快速模拟进度条 */
+.progress-bar {
+    width: 100%;
+    height: 10px;
+    background: var(--bg-elevated);
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+}
+.progress-bar > div {
+    height: 100%;
+    background: linear-gradient(90deg, var(--nba-blue), var(--nba-blue-light));
+    transition: width 0.15s ease;
+    border-radius: 6px;
+}
+
 /* ===== 主体布局（移动优先：单列） ===== */
 .layout {
     flex: 1;
@@ -324,8 +351,9 @@ body {
 }
 .bottombar::-webkit-scrollbar { display: none; }
 .bottombar-item {
-    flex: 1;
-    min-width: 60px;
+    flex: 1 1 0;
+    min-width: 44px;
+    flex-shrink: 1;
     background: transparent;
     border: none;
     color: var(--text-mute);
@@ -337,7 +365,7 @@ body {
     align-items: center;
     justify-content: center;
     gap: 3px;
-    padding: 8px 4px;
+    padding: 8px 2px;
     transition: color 0.15s;
 }
 .bottombar-item .icon { font-size: 20px; }
@@ -450,6 +478,136 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 }
 .player-pos { font-size: 11px; color: var(--text-dim); margin-top: 1px; }
 .player-table th { position: sticky; top: 0; }
+
+/* ===== 选秀（手机端友好卡片式） ===== */
+.draft-status {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px;
+    background: var(--bg-elevated);
+    border-radius: var(--radius-md);
+    border-left: 4px solid var(--nba-blue);
+}
+.draft-status.mine { border-left-color: var(--gold); background: rgba(255,215,0,0.08); }
+.draft-status .ds-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 13px;
+}
+.draft-status .ds-pick { font-size: 22px; font-weight: 800; }
+.draft-status .ds-owner { color: var(--text-dim); font-size: 12px; }
+
+.rookie-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+}
+@media (min-width: 600px) { .rookie-grid { grid-template-columns: 1fr 1fr; } }
+
+.rookie-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    transition: border-color 0.15s;
+}
+.rookie-card:active { border-color: var(--nba-blue); }
+.rookie-card .rc-rank {
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    background: var(--bg-hover);
+    color: var(--text-dim);
+    font-size: 11px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+.rookie-card .rc-info { flex: 1; min-width: 0; }
+.rookie-card .rc-name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rookie-card .rc-meta { font-size: 11px; color: var(--text-dim); margin-top: 2px; display: flex; gap: 6px; flex-wrap: wrap; }
+.rookie-card .rc-meta .tag { font-size: 10px; padding: 1px 5px; }
+.rookie-card .rc-pick-btn {
+    padding: 6px 10px;
+    font-size: 12px;
+    flex-shrink: 0;
+}
+
+.draft-recent {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.draft-recent-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 10px;
+    background: var(--bg-elevated);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+}
+.draft-recent-item .dri-pick { color: var(--text-dim); font-weight: 700; font-size: 11px; }
+.draft-recent-item .dri-name { font-weight: 600; }
+
+.tier-elite { color: #ffd700; }
+.tier-high  { color: #cc5de8; }
+.tier-solid { color: #4dabf7; }
+.tier-role  { color: #8a8f9a; }
+.tier-deep  { color: #6c757d; }
+
+/* ===== 赛季奖项最佳阵容卡片 ===== */
+.allteam-block { margin: 8px 0; }
+.allteam-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+    padding-left: 2px;
+}
+.allteam-row {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 6px;
+}
+@media (max-width: 480px) {
+    .allteam-row { grid-template-columns: repeat(3, 1fr); }
+}
+.allteam-cell {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 8px 4px;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+}
+.allteam-cell.mine {
+    border-color: var(--gold);
+    background: rgba(255,215,0,0.1);
+}
+.allteam-pos {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: var(--bg-hover);
+}
+.allteam-name {
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.2;
+    word-break: break-all;
+}
+.allteam-team {
+    font-size: 10px;
+    color: var(--text-dim);
+}
 
 /* ===== 交易 ===== */
 .trade-layout {
@@ -810,3 +968,50 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
     .main-content { padding: 28px 32px; }
     .sidebar { width: 220px; }
 }
+
+/* ===== 球队 logo ===== */
+.team-logo { vertical-align: middle; object-fit: contain; display: inline-block; }
+.team-logo-fallback { display: none; vertical-align: middle; flex-shrink: 0; }
+
+/* 启动界面球队选择卡片：logo 居中显示 */
+.team-select-card .card-logo {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 6px;
+    height: 70px;
+}
+.team-select-card .card-logo .team-logo,
+.team-select-card .card-logo .team-logo-fallback {
+    width: 64px;
+    height: 64px;
+}
+.team-select-card .card-logo .team-logo-fallback {
+    display: inline-flex;
+    font-size: 24px;
+}
+
+/* 顶部状态栏 team-badge：24px logo */
+.team-badge { display: inline-flex; align-items: center; gap: 6px; }
+.team-badge .team-logo,
+.team-badge .team-logo-fallback { width: 24px; height: 24px; flex-shrink: 0; }
+.team-badge .team-logo-fallback { display: none; font-size: 10px; }
+.team-badge .team-badge-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 表格内的 logo（排名表/赛程表/近期战绩/选秀等），16-20px */
+table .team-logo, table .team-logo-fallback { width: 18px; height: 18px; }
+.team-link { display: inline-flex; align-items: center; gap: 6px; }
+.team-link .team-logo, .team-link .team-logo-fallback { width: 20px; height: 20px; flex-shrink: 0; }
+
+/* 交易界面送出标题前 logo（24px） */
+.trade-side h3 { display: flex; align-items: center; gap: 8px; }
+.trade-side h3 .team-logo, .trade-side h3 .team-logo-fallback { width: 24px; height: 24px; flex-shrink: 0; }
+
+/* 弹窗对阵展示：48-64px 大 logo */
+.boxscore .team-score .team-logo,
+.boxscore .team-score .team-logo-fallback { width: 56px; height: 56px; margin: 0 auto 6px; display: block; }
+.modal-title .team-logo-lg,
+.modal-title .team-logo-fallback.team-logo-lg { width: 48px; height: 48px; flex-shrink: 0; }
+
+/* 球队详情弹窗顶部 logo（64px） */
+.team-detail-logo { width: 64px; height: 64px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }

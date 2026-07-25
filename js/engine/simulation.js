@@ -171,10 +171,36 @@ const SimEngine = (() => {
         // 归一化到 240 分钟（5×48）
         const total = sum(minPlan);
         const scale = 240 / total;
-        return rotation.map((p, i) => ({
+        // 5人及以下轮换单球员上限提到 48（NBA 单场最大48分钟），否则 44
+        const minCap = rotation.length <= 5 ? 48 : 44;
+        const result = rotation.map((p, i) => ({
             player: p,
-            min: Math.round(clamp(minPlan[i] * scale, 4, 44)),
+            min: Math.round(clamp(minPlan[i] * scale, 4, minCap)),
         }));
+        // 因 clamp 截断导致总时间不足 240 时，把差额均摊给未达上限的球员
+        let totalMin = sum(result.map(r => r.min));
+        for (let guard = 0; totalMin < 240 && guard < 100; guard++) {
+            let added = false;
+            for (let i = 0; i < result.length; i++) {
+                if (totalMin >= 240) break;
+                if (result[i].min < minCap) {
+                    result[i].min += 1;
+                    totalMin += 1;
+                    added = true;
+                }
+            }
+            if (!added) break;
+        }
+        // 因 Math.round 四舍五入导致总时间超过 240 时，从出场时间最多的球员扣除
+        for (let guard = 0; totalMin > 240 && guard < 100; guard++) {
+            let maxIdx = -1, maxMin = 4;
+            for (let i = 0; i < result.length; i++) {
+                if (result[i].min > maxMin) { maxMin = result[i].min; maxIdx = i; }
+            }
+            if (maxIdx >= 0) { result[maxIdx].min -= 1; totalMin -= 1; }
+            else break;
+        }
+        return result;
     }
 
     function teamRating(players) {
@@ -211,6 +237,24 @@ const SimEngine = (() => {
     function simulateGame(homePlayers, awayPlayers, isPlayoff = false, homeTactics = null, awayTactics = null) {
         const homeRot = buildRotation(homePlayers, homeTactics);
         const awayRot = buildRotation(awayPlayers, awayTactics);
+
+        // 全队受伤（轮换为空）时避免产生幽灵比赛：缺人队伍判 0-20 失败
+        // 有球员的一方生成 20 分的 lines，确保有比分也有球员数据
+        const homeEmpty = homeRot.length === 0;
+        const awayEmpty = awayRot.length === 0;
+        if (homeEmpty || awayEmpty) {
+            const homeScore = homeEmpty ? 0 : 20;
+            const awayScore = awayEmpty ? 0 : 20;
+            const homeLines = homeEmpty ? [] : generateLines(homeRot, homeScore, homeTactics);
+            const awayLines = awayEmpty ? [] : generateLines(awayRot, awayScore, awayTactics);
+            return {
+                home: { players: homePlayers, lines: homeLines, score: homeScore, quarters: splitQuarters(homeScore, []) },
+                away: { players: awayPlayers, lines: awayLines, score: awayScore, quarters: splitQuarters(awayScore, []) },
+                winner: homeScore >= awayScore ? "home" : "away",
+                ot: 0,
+                events: [],
+            };
+        }
 
         // 球队攻防效率（按出场时间加权）
         const homeOff = weightedAvg(homeRot, p => (p.ins + p.sh + p.pa) / 3);
@@ -297,6 +341,10 @@ const SimEngine = (() => {
 
     function splitQuarters(score, otScores) {
         const q = [0, 0, 0, 0];
+        if (score <= 0) {
+            if (otScores) otScores.forEach(s => q.push(s));
+            return q;
+        }
         let remaining = score;
         for (let i = 0; i < 4; i++) {
             if (i === 3) { q[i] = remaining; }

@@ -9,25 +9,53 @@ const DraftEngine = (() => {
 
     let rookieIdCounter = 0;
 
+    // 跨年度累积已生成新秀姓名，避免多年选秀出现重名
+    const allTimeRookieNames = new Set();
+
     // 生成新秀池（60人左右）
     function generateRookieClass(year) {
         const proto = window.ROOKIE_PROTOTYPES;
-        const names = [...proto.names];
-        // 打乱名字
-        shuffle(names);
         const rookies = [];
         const count = 70;
         // 按模板权重分配名额
         const pool = [];
         proto.templates.forEach(t => { for (let i = 0; i < t.weight; i++) pool.push(t); });
 
+        // 名字组合生成 + 单年内去重 + 跨年去重（避免与历史新秀重名）
+        const usedNames = new Set();
+        // 全联盟现役球员姓名，避免新秀与老将重名
+        const usedRookieIds = new Set();
+        if (window.PLAYERS_DATA) {
+            window.PLAYERS_DATA.forEach(p => usedRookieIds.add(p.n));
+        }
+        function genName() {
+            for (let attempt = 0; attempt < 50; attempt++) {
+                const fn = proto.firstNames[Math.floor(Math.random() * proto.firstNames.length)];
+                const ln = proto.lastNames[Math.floor(Math.random() * proto.lastNames.length)];
+                const full = `${fn}·${ln}`;
+                if (!usedNames.has(full) && !usedRookieIds.has(full) && !allTimeRookieNames.has(full)) {
+                    usedNames.add(full);
+                    allTimeRookieNames.add(full);
+                    return full;
+                }
+            }
+            // 极端情况：50 次都撞名，加随机后缀
+            const fn = proto.firstNames[Math.floor(Math.random() * proto.firstNames.length)];
+            const ln = proto.lastNames[Math.floor(Math.random() * proto.lastNames.length)];
+            const suffix = String.fromCharCode(65 + Math.floor(Math.random() * 26));
+            const full = `${fn}·${ln}${suffix}`;
+            usedNames.add(full);
+            allTimeRookieNames.add(full);
+            return full;
+        }
+
         for (let i = 0; i < count; i++) {
             const template = pool[Math.floor(Math.random() * pool.length)];
-            const name = names[i % names.length] + (i >= names.length ? " " + String.fromCharCode(65 + (i % 26)) : "");
+            const name = genName();
             const pos = pick(proto.positions);
             const profile = window.ROOKIE_POS_PROFILES[pos];
 
-            const pot = randInt(template.potMin, template.potMax);
+            const potRaw = randInt(template.potMin, template.potMax);
             const base = randInt(template.baseMin, template.baseMax);
 
             // 基于位置档案 + base 偏移生成各项能力
@@ -42,6 +70,10 @@ const DraftEngine = (() => {
 
             // 综合 ovr 基于位置加权
             const ovr = computeOvr(pos, { ins, sh, pa, re, de, at, iq });
+
+            // 潜力 pot 是"能力上限"，必须高于当前总评 ovr；
+            // 模板 potRaw 可能因 base+variance 推高 ovr 而不满足，这里兜底
+            const pot = Math.max(potRaw, ovr + 2);
 
             rookies.push({
                 id: `rookie_${year}_${rookieIdCounter++}`,
@@ -108,24 +140,47 @@ const DraftEngine = (() => {
             // 走得越远顺位越靠后
             const aRank = a.playoffExitRound || 1;
             const bRank = b.playoffExitRound || 1;
-            if (aRank !== bRank) return bRank - aRank; // 走得远排后
+            if (aRank !== bRank) return aRank - bRank; // exitRound 升序：首轮出局靠前，冠军末尾
             return a.win - b.win; // 同轮次战绩差排前
         });
 
         const firstRound = [...lotteryOrder, ...playoff];
-        // 第二轮同样顺序
-        const secondRound = [...firstRound];
+
+        // 第二轮：纯按战绩倒序（无乐透抽签）
+        // NBA 规则：次轮顺位不受乐透影响，按常规赛战绩倒序排列；
+        // 季后赛球队按出局轮次（首轮出局在前，冠军在末），同轮次按战绩
+        const secondRound = [...standings].sort((a, b) => {
+            // 非季后赛球队排在季后赛球队之前
+            if (a.madePlayoffs !== b.madePlayoffs) return a.madePlayoffs ? 1 : -1;
+            if (a.madePlayoffs) {
+                const aRank = a.playoffExitRound || 1;
+                const bRank = b.playoffExitRound || 1;
+                if (aRank !== bRank) return aRank - bRank;
+            }
+            // 战绩差（win 少）排前
+            return a.win - b.win;
+        });
+
         return { firstRound, secondRound };
+    }
+
+    // 乐透球队组合数：rank 从 0 开始（最差战绩 rank=0）
+    // 前14名沿用 NBA 实际概率量级（最差战绩250，依次递减）；
+    // 超过14支乐透球队时，给剩余球队少量递减组合数，避免 undefined
+    function combosForRank(rank) {
+        const table = [250, 199, 156, 119, 88, 63, 43, 28, 17, 11, 8, 7, 6, 5];
+        if (rank < table.length) return table[rank];
+        // 第15+ 支球队：组合数继续递减，最低保留1组
+        const extra = rank - table.length;
+        return Math.max(1, 5 - extra);
     }
 
     // 乐透抽签：14支球队，前4顺位抽签
     function runLottery(lotteryTeams) {
-        // 组合数分配（最差战绩250，依次递减）
-        const combos = [250, 199, 156, 119, 88, 63, 43, 28, 17, 11, 8, 7, 6, 5];
         // 抽前4
         const top4 = [];
         const remaining = [...lotteryTeams];
-        const remainingCombos = [...combos].slice(0, remaining.length);
+        const remainingCombos = remaining.map((_, i) => combosForRank(i));
         while (top4.length < 4 && remaining.length > 0) {
             const total = remainingCombos.reduce((a, b) => a + b, 0);
             let r = Math.random() * total;
@@ -182,6 +237,7 @@ const DraftEngine = (() => {
         generateRookieClass,
         determineDraftOrder,
         runLottery,
+        combosForRank,
         aiPick,
         playerPick,
         assignRookieToTeam,

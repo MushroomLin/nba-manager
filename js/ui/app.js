@@ -62,6 +62,7 @@ const App = (() => {
             // 玩家战术设置：pace 节奏 / defense 防守强度 / rotation 轮换深度
             tactics: { pace: 1, defense: 1, rotation: 1 },
             injuryLog: [], // 本季伤病记录（用于展示）
+            rosterVersion: 2027, // 名单版本号，与 main.js 中 CURRENT_ROSTER_VERSION 对齐
         };
         teams.forEach(t => state.statAccum[t.id] = {});
         updateStandings();
@@ -73,11 +74,15 @@ const App = (() => {
     // 读档：从存档恢复游戏状态
     function loadState(savedState) {
         state = savedState;
+        // 重置模块级 UI 状态，避免残留上一局的选择（如交易槽里的旧球员引用）
+        tradeState = { partner: null, myOut: [], theirOut: [] };
+        currentView = "dashboard";
         // 兼容旧存档：补全新增字段
         if (!state.tactics) state.tactics = { pace: 1, defense: 1, rotation: 1 };
         if (!state.awardsHistory) state.awardsHistory = [];
         if (!state.playerHistory) state.playerHistory = {};
         if (!state.injuryLog) state.injuryLog = [];
+        if (!state.rosterVersion) state.rosterVersion = 0;
         // standings 已在读档时置空，这里重算
         updateStandings();
         renderAll();
@@ -97,6 +102,14 @@ const App = (() => {
     function teamAbbr(teamId) { const t = state.teams.find(x => x.id === teamId); return t ? t.abbr : teamId; }
     function teamObj(teamId) { return state.teams.find(x => x.id === teamId); }
 
+    // 球队 logo img，onerror 时隐藏 img 显示 abbr 圆作为 fallback（CDN 可能失效）
+    function teamLogo(teamId, size) {
+        const t = state.teams.find(x => x.id === teamId);
+        if (!t || !t.logo) return '';
+        const s = size || 24;
+        return `<img src="${t.logo}" class="team-logo" width="${s}" height="${s}" alt="${t.abbr}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='inline-flex'"><span class="team-logo-fallback" style="display:none;width:${s}px;height:${s}px;background:${t.color};color:#fff;border-radius:50%;align-items:center;justify-content:center;font-size:${Math.max(10,s*0.4)}px;font-weight:700">${t.abbr}</span>`;
+    }
+
     // 生成替补填充球员（用于补齐名单至 14 人）
     function generateBenchPlayer(teamId, idx) {
         const positions = ["PG","SG","SF","PF","C"];
@@ -104,9 +117,11 @@ const App = (() => {
         const profile = window.ROOKIE_POS_PROFILES[pos];
         const ovr = randInt(62, 70);
         const v = () => randInt(-4, 4);
-        const surnamePool = ["史密斯","琼斯","威廉姆斯","布朗","戴维斯","米勒","威尔逊","摩尔","泰勒","安德森","托马斯","杰克逊","怀特","哈里斯","马丁","汤普森","克拉克","刘易斯","沃克","霍尔"];
-        const names = window.ROOKIE_PROTOTYPES.names;
-        const name = (names[Math.floor(Math.random()*names.length)] || surnamePool[idx % surnamePool.length]);
+        // 替补球员用「名+姓」组合生成，避免与现役/新秀重名
+        const proto = window.ROOKIE_PROTOTYPES;
+        const fn = proto.firstNames[Math.floor(Math.random()*proto.firstNames.length)];
+        const ln = proto.lastNames[Math.floor(Math.random()*proto.lastNames.length)];
+        const name = `${fn}·${ln}`;
         return {
             id: `bench_${teamId}_${idx}`,
             n: name,
@@ -132,7 +147,7 @@ const App = (() => {
     // ============ 顶部状态栏 ============
     function renderTopbar() {
         const t = teamObj(state.manager.teamId);
-        document.getElementById("team-badge").textContent = `${t.abbr} · ${state.manager.name}`;
+        document.getElementById("team-badge").innerHTML = `${teamLogo(state.manager.teamId, 24)}<span class="team-badge-text">${t.abbr} · ${state.manager.name}</span>`;
         document.getElementById("season-info").textContent = `${state.year}-${state.year + 1} 赛季`;
         document.getElementById("phase-info").textContent = phaseLabel();
         const r = state.records[state.manager.teamId];
@@ -142,6 +157,47 @@ const App = (() => {
             document.getElementById("record-info").textContent = "";
         }
         document.getElementById("advance-btn").textContent = advanceBtnLabel();
+        // advance 主按钮：轮到玩家选秀时禁用（强制玩家点新秀卡），其他时候可用
+        const advBtn = document.getElementById("advance-btn");
+        if (advBtn) advBtn.disabled = advanceBtnDisabled();
+        // 快进按钮：仅常规赛/季后赛/总决赛可用
+        const fastBtn = document.getElementById("fast-btn");
+        if (fastBtn) {
+            const show = state.phase === "regular" || state.phase === "playoffs" || state.phase === "finals";
+            fastBtn.disabled = !show;
+            fastBtn.textContent = fastBtnLabel();
+        }
+        // 手机端底部栏：选秀/自由市场阶段，"赛程"按钮临时换成"选秀"/"FA"入口
+        updateBottombarForPhase();
+    }
+
+    // 根据当前阶段动态调整手机底部导航栏（让休赛期功能在手机端可见）
+    function updateBottombarForPhase() {
+        // 查找第4个底部按钮（原"赛程"位置），按位置定位避免 dataset 改变后找不到
+        const allBottomBtns = document.querySelectorAll('.bottombar-item');
+        const scheduleBtn = allBottomBtns[3]; // 索引3 = 赛程位
+        if (!scheduleBtn) return;
+        if (state.phase === "draft") {
+            scheduleBtn.dataset.view = "draft";
+            scheduleBtn.innerHTML = '<span class="icon">🎓</span>选秀';
+            scheduleBtn.classList.toggle("active", currentView === "draft");
+        } else if (state.phase === "freeAgency") {
+            scheduleBtn.dataset.view = "freeagents";
+            scheduleBtn.innerHTML = '<span class="icon">💰</span>FA';
+            scheduleBtn.classList.toggle("active", currentView === "freeagents");
+        } else {
+            scheduleBtn.dataset.view = "schedule";
+            scheduleBtn.innerHTML = '<span class="icon">📅</span>赛程';
+            scheduleBtn.classList.toggle("active", currentView === "schedule");
+        }
+    }
+
+    function fastBtnLabel() {
+        switch (state.phase) {
+            case "regular": return "⏩ 至季后赛";
+            case "playoffs": case "finals": return "⏩ 模拟本轮";
+            default: return "⏩";
+        }
     }
 
     function phaseLabel() {
@@ -160,21 +216,34 @@ const App = (() => {
         switch (state.phase) {
             case "regular": return "下一场比赛 ▶";
             case "playoffs": case "finals": return "下一轮 ▶";
-            case "draft": return state.draftPick < 60 ? "继续选秀 ▶" : "进入自由市场 ▶";
+            case "draft":
+                if (state.draftPick >= 60) return "进入自由市场 ▶";
+                if (state.draftOrder && state.draftOrder[state.draftPick] === state.manager.teamId) return "请选择新秀 ⬇";
+                return "继续选秀 ▶";
             case "freeAgency": return "开始新赛季 ▶";
             case "offseason": return "开始选秀 ▶";
             default: return "继续 ▶";
         }
     }
 
+    // 判断当前 advance 按钮是否可点（轮到玩家选秀时应禁用，强制玩家点新秀卡）
+    function advanceBtnDisabled() {
+        if (state.phase === "draft" && state.draftPick < 60 &&
+            state.draftOrder && state.draftOrder[state.draftPick] === state.manager.teamId) {
+            return true;
+        }
+        return false;
+    }
+
     // ============ 视图路由 ============
     function renderAll() {
-        renderTopbar();
         renderView(currentView);
     }
 
     function renderView(view) {
         currentView = view;
+        // 刷新顶部状态栏（advance/fast 按钮状态、底部栏阶段切换都依赖这里）
+        renderTopbar();
         // 同步桌面侧边栏与手机底部栏的选中状态
         document.querySelectorAll(".nav-item, .bottombar-item").forEach(b => {
             b.classList.toggle("active", b.dataset.view === view);
@@ -299,17 +368,19 @@ const App = (() => {
             const mvp = a.mvp ? `${a.mvp.player.n} (${teamAbbr(a.mvp.teamId)})` : '-';
             const dpoy = a.dpoy ? `${a.dpoy.player.n} (${teamAbbr(a.dpoy.teamId)})` : '-';
             const roy = a.roy ? `${a.roy.player.n} (${teamAbbr(a.roy.teamId)})` : '-';
+            const sixMan = a.sixMan ? `${a.sixMan.player.n} (${teamAbbr(a.sixMan.teamId)})` : '-';
+            const mip = a.mip ? `${a.mip.player.n} (${teamAbbr(a.mip.teamId)})` : '-';
             const champ = state.champions.find(c => c.year === a.year);
             const champStr = champ ? `${champ.name}` : '-';
             return `<tr>
                 <td class="num"><b>${a.year}</b></td>
-                <td>${mvp}</td><td>${dpoy}</td><td>${roy}</td>
+                <td>${mvp}</td><td>${dpoy}</td><td>${roy}</td><td>${sixMan}</td><td>${mip}</td>
                 <td>${champStr}</td>
             </tr>`;
         }).join("");
         showModal(`
             <div class="modal-title">🏆 奖项历史</div>
-            <div class="table-wrap"><table><thead><tr><th class="num">赛季</th><th>MVP</th><th>DPOY</th><th>ROY</th><th>冠军</th></tr></thead><tbody>${rows}</tbody></table></div>
+            <div class="table-wrap"><table><thead><tr><th class="num">赛季</th><th>MVP</th><th>DPOY</th><th>ROY</th><th>6MOY</th><th>MIP</th><th>冠军</th></tr></thead><tbody>${rows}</tbody></table></div>
             <div class="modal-actions"><button class="btn btn-primary" onclick="App.closeModal()">关闭</button></div>
         `);
     }
@@ -360,7 +431,10 @@ const App = (() => {
             ${autoHtml}
             <div class="card-title mt-20">手动存档槽 <span class="muted" style="font-size:11px;text-transform:none">读取会覆盖当前进度</span></div>
             ${slotsHtml}
-            <div class="modal-actions"><button class="btn btn-primary" onclick="App.closeModal()">关闭</button></div>
+            <div class="modal-actions">
+                <button class="btn" id="clear-all-saves" style="margin-right:auto;color:var(--nba-red-light)">🗑️ 清除所有存档</button>
+                <button class="btn btn-primary" onclick="App.closeModal()">关闭</button>
+            </div>
         `);
         // 绑定
         setTimeout(() => {
@@ -396,6 +470,15 @@ const App = (() => {
                     }
                 });
             });
+            const clearAllBtn = document.getElementById("clear-all-saves");
+            if (clearAllBtn) clearAllBtn.addEventListener("click", () => {
+                if (confirm("将清除全部存档（自动存档 + 所有手动槽位），且当前游戏进度也会丢失。确定继续？")) {
+                    SaveEngine.clearAll();
+                    toast("已清除所有存档", "success");
+                    closeModal();
+                    setTimeout(() => location.reload(), 600);
+                }
+            });
         }, 0);
     }
 
@@ -411,7 +494,7 @@ const App = (() => {
         // 下一场比赛
         let nextGame = "赛季进行中";
         const ng = findNextUserGame();
-        if (ng) nextGame = `${teamAbbr(ng.away)} @ ${teamAbbr(ng.home)}`;
+        if (ng) nextGame = `${teamLogo(ng.away, 32)} <span style="vertical-align:middle">${teamAbbr(ng.away)}</span> <span style="vertical-align:middle;color:var(--text-dim);margin:0 6px">@</span> ${teamLogo(ng.home, 32)} <span style="vertical-align:middle">${teamAbbr(ng.home)}</span>`;
 
         // 最近5场
         const recent = state.userGameLog.slice(-5).reverse();
@@ -419,7 +502,7 @@ const App = (() => {
             const opp = g.opp;
             const res = g.win ? "胜" : "负";
             const cls = g.win ? "success" : "error";
-            return `<tr><td>${teamAbbr(opp)}</td><td class="num">${g.myScore}-${g.oppScore}</td><td><span class="tag tag-${g.win?'rookie':'injured'}" style="background:${g.win?'rgba(46,204,113,0.2)':'rgba(231,76,60,0.2)'};color:${g.win?'#2ecc71':'#e8324a'}">${res}</span></td></tr>`;
+            return `<tr><td>${teamLogo(opp, 16)} ${teamAbbr(opp)}</td><td class="num">${g.myScore}-${g.oppScore}</td><td><span class="tag tag-${g.win?'rookie':'injured'}" style="background:${g.win?'rgba(46,204,113,0.2)':'rgba(231,76,60,0.2)'};color:${g.win?'#2ecc71':'#e8324a'}">${res}</span></td></tr>`;
         }).join("") : `<tr><td colspan="3" class="muted center">暂无比赛记录</td></tr>`;
 
         // 排名片段
@@ -563,7 +646,7 @@ const App = (() => {
         </div>
         <div class="trade-layout">
             <div class="trade-side">
-                <h3>${teamAbbr(myId)} 送出</h3>
+                <h3>${teamLogo(myId, 24)} ${teamAbbr(myId)} 送出</h3>
                 <div class="trade-slot">${myOutHtml}</div>
                 <div class="salary-bar"><span>送出薪资</span><span>$${myOutSal.toFixed(1)}M</span></div>
                 ${myCheck ? `<div class="salary-bar"><span>薪资匹配</span><span class="${myCheck.valid?'salary-valid':'salary-invalid'}">${myCheck.valid?'✔ 合规':'✘ '+myCheck.reason}</span></div>` : ''}
@@ -571,7 +654,7 @@ const App = (() => {
             </div>
             <div class="trade-arrow">⇄</div>
             <div class="trade-side">
-                <h3>${partner ? teamAbbr(partner) : '???'} 送出</h3>
+                <h3>${partner ? teamLogo(partner, 24) + ' ' + teamAbbr(partner) : '???' } 送出</h3>
                 <div class="trade-slot">${theirOutHtml}</div>
                 <div class="salary-bar"><span>送出薪资</span><span>$${theirOutSal.toFixed(1)}M</span></div>
                 ${theirCheck ? `<div class="salary-bar"><span>对方薪资匹配</span><span class="${theirCheck.valid?'salary-valid':'salary-invalid'}">${theirCheck.valid?'✔ 合规':'✘ 不合规'}</span></div>` : ''}
@@ -620,10 +703,10 @@ const App = (() => {
             const g = day.find(x => x.home === myId || x.away === myId);
             if (g) remaining.push({ day: d, home: g.home, away: g.away });
         }
-        const remHtml = remaining.slice(0, 15).map(g => `<tr><td class="num">第${g.day+1}天</td><td>${teamAbbr(g.away)} @ ${teamAbbr(g.home)}</td><td>${g.home===myId||g.away===myId?'<span class="tag tag-rookie">我方</span>':''}</td></tr>`).join("");
+        const remHtml = remaining.slice(0, 15).map(g => `<tr><td class="num">第${g.day+1}天</td><td>${teamLogo(g.away, 16)} ${teamAbbr(g.away)} <span class="muted">@</span> ${teamLogo(g.home, 16)} ${teamAbbr(g.home)}</td><td>${g.home===myId||g.away===myId?'<span class="tag tag-rookie">我方</span>':''}</td></tr>`).join("");
         // 已完成用户比赛
         const done = state.userGameLog.slice(-15).reverse();
-        const doneHtml = done.map(g => `<tr><td>${teamAbbr(g.opp)}</td><td class="num">${g.myScore}-${g.oppScore}</td><td><span style="color:${g.win?'#2ecc71':'#e8324a'}">${g.win?'胜':'负'}</span></td></tr>`).join("") || `<tr><td colspan="3" class="muted center">暂无</td></tr>`;
+        const doneHtml = done.map(g => `<tr><td>${teamLogo(g.opp, 16)} ${teamAbbr(g.opp)}</td><td class="num">${g.myScore}-${g.oppScore}</td><td><span style="color:${g.win?'#2ecc71':'#e8324a'}">${g.win?'胜':'负'}</span></td></tr>`).join("") || `<tr><td colspan="3" class="muted center">暂无</td></tr>`;
         return `
         <h1 class="page-title">📅 赛程</h1>
         <div class="grid-2">
@@ -650,7 +733,7 @@ const App = (() => {
             const playoffLine = i === 7 ? "playoff-line" : "";
             return `<tr class="${isMe?'me-row':''} ${playoffLine}" style="${isMe?'background:rgba(29,66,138,0.25);font-weight:700;':''}">
                 <td class="num">${i+1}</td>
-                <td><a class="team-link" data-teamid="${e.teamId}">${e.abbr} ${e.name}</a></td>
+                <td><a class="team-link" data-teamid="${e.teamId}">${teamLogo(e.teamId, 20)}${e.abbr} ${e.name}</a></td>
                 <td class="num">${e.win}-${e.loss}</td>
                 <td class="num">${(e.winRate*100).toFixed(1)}%</td>
                 <td class="num">${e.streak>0?`${e.streak}连胜`:e.streak<0?`${-e.streak}连败`:'-'}</td>
@@ -674,7 +757,8 @@ const App = (() => {
     function renderStats() {
         const myId = state.manager.teamId;
         const acc = state.statAccum[myId] || {};
-        const players = state.teamsPlayers[myId];
+        // 仅展示当前仍属于我队的球员（已被交易走的球员不显示在我的场均表里）
+        const players = state.teamsPlayers[myId].filter(p => p.t === myId);
         const withStats = players.map(p => {
             const s = acc[p.id];
             if (!s || s.gp === 0) return null;
@@ -694,17 +778,29 @@ const App = (() => {
             <td class="num">${(x.tp*100).toFixed(1)}%</td>
         </tr>`).join("") || `<tr><td colspan="10" class="muted center">尚无比赛数据</td></tr>`;
 
-        // 联盟榜单：收集所有球队所有球员
-        const allPlayers = [];
+        // 联盟榜单：收集所有球员，按 pid 聚合（被交易的球员在老队和新队各有一条记录，需合并避免重复）
+        const playerAgg = {}; // pid -> { p, s(合并), team(当前球队) }
         state.teams.forEach(t => {
             const a = state.statAccum[t.id] || {};
             Object.entries(a).forEach(([pid, s]) => {
-                if (s.gp >= 3) {
-                    const p = state.players.find(x => x.id === pid);
-                    allPlayers.push({ p, s, team: t });
+                if (s.gp < 3) return;
+                const p = state.players.find(x => x.id === pid);
+                if (!p) return;
+                if (!playerAgg[pid]) {
+                    // 球队显示为球员当前所属球队（p.t），避免被交易后只显示老队
+                    playerAgg[pid] = { p, s: { ...s }, team: state.teams.find(tt => tt.id === p.t) || t };
+                } else {
+                    // 合并：累加各项统计，gp 累加
+                    const cur = playerAgg[pid].s;
+                    cur.gp += s.gp; cur.pts += s.pts; cur.reb += s.reb; cur.ast += s.ast;
+                    cur.stl += s.stl; cur.blk += s.blk; cur.tov += s.tov;
+                    cur.fgm += s.fgm; cur.fga += s.fga; cur.tpm += s.tpm; cur.tpa += s.tpa;
+                    // 球队显示为球员当前所属球队
+                    playerAgg[pid].team = state.teams.find(tt => tt.id === p.t) || t;
                 }
             });
         });
+        const allPlayers = Object.values(playerAgg);
 
         const currentLeader = LEAGUE_LEADERS.find(l => l.key === statsTab) || LEAGUE_LEADERS[0];
         const sorted = allPlayers.map(x => ({
@@ -754,39 +850,84 @@ const App = (() => {
         const order = state.draftOrder;
         const pickNum = state.draftPick; // 0-indexed
         const totalPicks = 60;
-        const currentOwner = order && order[pickNum] ? order[pickNum] : null;
+        const draftComplete = pickNum >= totalPicks;
+        const currentOwner = (!draftComplete && order && order[pickNum]) ? order[pickNum] : null;
         const isMyPick = currentOwner === myId;
+        const draftYear = state.year; // startDraft 已 year++
 
-        // 已选
-        const drafted = state.rookieClass.filter(r => r.t !== null).slice(-8);
-        const draftedHtml = drafted.map(r => `<tr><td class="num">#${r.draftPick}</td><td>${r.n}</td><td class="pos-${r.p}">${r.p}</td><td class="num">${r.o}</td><td>${teamAbbr(r.t)}</td></tr>`).join("") || `<tr><td colspan="5" class="muted center">尚未开始</td></tr>`;
+        // 当前顺位状态卡
+        // 选秀已结束：显示完成状态，不再显示顺位越界数字（#61）与操作按钮
+        const statusHtml = draftComplete ? `
+            <div class="draft-status">
+                <div class="ds-row">
+                    <div>
+                        <div class="ds-pick">✓ 全部 ${totalPicks} 顺位已完成</div>
+                        <div class="ds-owner muted">点击右上角"进入自由市场"继续</div>
+                    </div>
+                    <div style="text-align:right">
+                        <div style="font-weight:800;color:var(--text-dim)">选秀结束</div>
+                        <div class="muted" style="font-size:11px;margin-top:2px">${draftYear} 年 NBA 选秀</div>
+                    </div>
+                </div>
+            </div>` : `
+            <div class="draft-status ${isMyPick?'mine':''}">
+                <div class="ds-row">
+                    <div>
+                        <div class="ds-pick">#${pickNum+1} <span style="font-size:13px;color:var(--text-dim);font-weight:400">/ ${totalPicks}</span></div>
+                        <div class="ds-owner">${currentOwner ? `${teamLogo(currentOwner, 20)} ${teamAbbr(currentOwner)} · ${teamName(currentOwner)}` : '-'}</div>
+                    </div>
+                    <div style="text-align:right">
+                        <div style="font-weight:800;color:${isMyPick?'var(--gold)':'var(--text-dim)'}">${isMyPick?'你的顺位!':'AI 选择中'}</div>
+                        <div class="muted" style="font-size:11px;margin-top:2px">${draftYear} 年 NBA 选秀</div>
+                    </div>
+                </div>
+                ${(!isMyPick && pickNum < totalPicks) ? `<button class="btn btn-primary btn-sm" id="draft-auto-to-mine" style="margin-top:4px">⏩ 模拟到我的顺位</button>` : ''}
+                ${pickNum < totalPicks ? `<button class="btn btn-sm" id="draft-skip-rest" style="margin-top:4px;${isMyPick?'margin-left:8px':''}">跳过剩余选秀 ▶</button>` : ''}
+            </div>`;
 
-        // 待选新秀（按模拟选秀榜）
+        // 待选新秀卡片
         const topAvail = available.slice(0, 12);
-        const availHtml = topAvail.map((r, i) => {
-            const disabled = !isMyPick;
-            return `<tr data-rid="${r.id}">
-                <td class="num">${i+1}</td>
-                <td><div class="player-row"><div class="player-ovr ${ovrClass(r.o)}">${r.o}</div><div><div class="player-name">${r.n}</div><div class="player-pos">潜力 ${r.pot}</div></div></div></td>
-                <td class="pos-${r.p}">${r.p}</td>
-                <td class="num">${r.o}</td>
-                <td class="num">${r.pot}</td>
-                <td>${isMyPick ? `<button class="btn btn-primary btn-sm draft-pick" data-rid="${r.id}">选择</button>` : '<span class="muted">-</span>'}</td>
-            </tr>`;
-        }).join("");
+        const tierLabel = (tier) => ({elite:'状元级',high:'乐透级',solid:'首轮级',role:'次轮级',deep:'末轮级'}[tier]||'');
+        const rookieCards = topAvail.map((r, i) => {
+            return `<div class="rookie-card" data-rid="${r.id}">
+                <div class="rc-rank">${i+1}</div>
+                <div class="player-ovr ${ovrClass(r.o)}" style="width:36px;height:36px">${r.o}</div>
+                <div class="rc-info">
+                    <div class="rc-name">${r.n}</div>
+                    <div class="rc-meta">
+                        <span class="pos-${r.p}">${r.p}</span>
+                        <span>${r.a}岁</span>
+                        <span>潜力 <b>${r.pot}</b></span>
+                        <span class="tier-${r.tier}">${tierLabel(r.tier)}</span>
+                    </div>
+                </div>
+                ${isMyPick ? `<button class="btn btn-primary btn-sm rc-pick-btn draft-pick" data-rid="${r.id}">选择</button>` : ''}
+            </div>`;
+        }).join("") || `<div class="muted center" style="padding:20px">新秀已全部被选中</div>`;
+
+        // 近期选中（按选秀顺位倒序，取最近 8 个）
+        const drafted = state.rookieClass.filter(r => r.t !== null)
+            .sort((a, b) => (b.draftPick || 0) - (a.draftPick || 0)).slice(0, 8);
+        const draftedHtml = drafted.map(r => `
+            <div class="draft-recent-item">
+                <div><span class="dri-pick">#${r.draftPick}</span> <span class="pos-${r.p}">${r.p}</span> <span class="dri-name">${r.n}</span></div>
+                <div><span class="muted">${r.o}总评</span> ${teamLogo(r.t, 20)} <b style="color:var(--nba-blue)">${teamAbbr(r.t)}</b></div>
+            </div>
+        `).join("") || `<div class="muted center" style="padding:14px">尚未开始</div>`;
 
         return `
-        <h1 class="page-title">🎓 NBA 选秀 — ${state.year+1}</h1>
+        <h1 class="page-title">🎓 NBA 选秀 — ${draftYear}</h1>
         <div class="card">
-            <div class="stat-grid">
-                <div class="stat-box"><div class="value">#${pickNum+1}</div><div class="label">当前顺位</div></div>
-                <div class="stat-box"><div class="value">${currentOwner?teamAbbr(currentOwner):'-'}</div><div class="label">持有球队</div></div>
-                <div class="stat-box"><div class="value" style="color:${isMyPick?'#ffd700':'#8a8f9a'}">${isMyPick?'你的顺位!':'AI 选择中'}</div><div class="label">状态</div></div>
-            </div>
+            <div class="card-title">选秀进度</div>
+            ${statusHtml}
         </div>
-        <div class="grid-2">
-            <div class="card"><div class="card-title">新秀前景榜</div><div class="table-wrap"><table><thead><tr><th class="num">#</th><th>球员</th><th>位</th><th class="num">总评</th><th class="num">潜力</th><th>操作</th></tr></thead><tbody>${availHtml}</tbody></table></div></div>
-            <div class="card"><div class="card-title">近期选中</div><div class="table-wrap"><table><thead><tr><th class="num">顺位</th><th>球员</th><th>位</th><th class="num">总评</th><th>球队</th></tr></thead><tbody>${draftedHtml}</tbody></table></div></div>
+        <div class="card">
+            <div class="card-title">新秀前景榜 <span class="muted" style="font-size:11px;text-transform:none">${available.length} 人可选 ${isMyPick?'· 点击选择你的新秀':''}</span></div>
+            <div class="rookie-grid">${rookieCards}</div>
+        </div>
+        <div class="card">
+            <div class="card-title">近期选中</div>
+            <div class="draft-recent">${draftedHtml}</div>
         </div>`;
     }
 
@@ -801,7 +942,7 @@ const App = (() => {
         const rows = allTeams.sort((a,b) => (b.win/(b.win+b.loss||1)) - (a.win/(a.win+a.loss||1))).map(t => {
             const isMe = t.id === myId;
             return `<tr style="${isMe?'background:rgba(29,66,138,0.25);font-weight:700;':''}">
-                <td><a class="team-link" data-teamid="${t.id}">${t.abbr}</a></td><td><a class="team-link" data-teamid="${t.id}">${t.city}${t.name}</a></td><td>${t.conf==="East"?"东":"西"}</td>
+                <td><a class="team-link" data-teamid="${t.id}">${teamLogo(t.id, 20)}${t.abbr}</a></td><td><a class="team-link" data-teamid="${t.id}">${t.city}${t.name}</a></td><td>${t.conf==="East"?"东":"西"}</td>
                 <td class="num">${t.win}-${t.loss}</td><td class="num">${Math.round(t.rating)}</td>
                 <td class="num">$${t.salary.toFixed(1)}M</td>
             </tr>`;
@@ -976,7 +1117,7 @@ const App = (() => {
 
     function showAwardsModal(awards) {
         const myId = state.manager.teamId;
-        const fmt = (c) => c ? `${c.player.n} <span class="muted" style="font-size:12px">(${teamAbbr(c.teamId)})</span> <span class="muted" style="font-size:12px">${c.ppg.toFixed(1)}分 ${c.rpg.toFixed(1)}板 ${c.apg.toFixed(1)}助</span>` : '<span class="muted">无</span>';
+        const fmt = (c) => c ? `${c.player.n} <span class="muted" style="font-size:12px">(${teamAbbr(c.teamId)})</span> <span class="muted" style="font-size:11px">${c.ppg.toFixed(1)}分 ${c.rpg.toFixed(1)}板 ${c.apg.toFixed(1)}助</span>` : '<span class="muted">无</span>';
         const isMine = (c) => c && c.teamId === myId;
         const winnerRow = (label, c) => `
             <div class="award-row ${isMine(c) ? 'mine' : ''}">
@@ -989,12 +1130,35 @@ const App = (() => {
                 <td>${c.player.n} <span class="muted" style="font-size:11px">(${teamAbbr(c.teamId)})</span></td>
                 <td class="num">${c.ppg.toFixed(1)}</td><td class="num">${c.rpg.toFixed(1)}</td><td class="num">${c.apg.toFixed(1)}</td>
             </tr>`;
+        // 阵容展示：5人一行，标注位置
+        const teamRow = (detail, label) => {
+            if (!detail || detail.length === 0) return '';
+            const players = detail.map(c => `
+                <div class="allteam-cell ${isMine(c) ? 'mine' : ''}">
+                    <div class="allteam-pos pos-${c.player.p}">${c.player.p}</div>
+                    <div class="allteam-name">${c.player.n}</div>
+                    <div class="allteam-team">${teamAbbr(c.teamId)}</div>
+                </div>`).join('');
+            return `<div class="allteam-block"><div class="allteam-label">${label}</div><div class="allteam-row">${players}</div></div>`;
+        };
         showModal(`
             <div class="modal-title">🏆 ${awards.year}-${awards.year+1} 赛季奖项</div>
             <div class="card-title">个人奖项</div>
             ${winnerRow('最有价值球员 MVP', awards.mvp)}
             ${winnerRow('最佳防守球员 DPOY', awards.dpoy)}
             ${winnerRow('最佳新秀 ROY', awards.roy)}
+            ${winnerRow('最佳第六人 6MOY', awards.sixMan)}
+            ${winnerRow('进步最快球员 MIP', awards.mip)}
+            <div class="card-title mt-20">最佳阵容</div>
+            ${teamRow(awards.allNBAFirstDetail, '一阵')}
+            ${teamRow(awards.allNBASecondDetail, '二阵')}
+            ${teamRow(awards.allNBAThirdDetail, '三阵')}
+            <div class="card-title mt-20">最佳防守阵容</div>
+            ${teamRow(awards.allDefFirstDetail, '防守一阵')}
+            ${teamRow(awards.allDefSecondDetail, '防守二阵')}
+            <div class="card-title mt-20">最佳新秀阵容</div>
+            ${teamRow(awards.allRookieFirstDetail, '新秀一阵')}
+            ${teamRow(awards.allRookieSecondDetail, '新秀二阵')}
             <div class="card-title mt-20">MVP 投票前 5</div>
             <div class="table-wrap"><table><thead><tr><th class="num">#</th><th>球员</th><th class="num">分</th><th class="num">板</th><th class="num">助</th></tr></thead><tbody>
             ${awards.mvpTop5.map((c,i)=>listRow(c,i)).join('')}
@@ -1011,13 +1175,16 @@ const App = (() => {
             west: SeasonEngine.setupPlayoffs(state.standings).west,
             eastResults: null, westResults: null,
             finalsResult: null,
+            // 记录每支季后赛球队的出局轮次（1=首轮, 2=半决赛, 3=分区决赛, 4=总决赛, 5=冠军）
+            // 在 advancePlayoffs 中随每轮模拟累积写入，供 startDraft 确定选秀顺位使用
+            exits: {},
         };
         state.phase = "playoffs";
         toast("常规赛结束！季后赛打响 🏆", "gold");
         renderAll();
     }
 
-    function advancePlayoffs() {
+    function advancePlayoffs(fast = false) {
         const po = state.playoffs;
         const myId = state.manager.teamId;
         if (po.round <= 3) {
@@ -1025,10 +1192,19 @@ const App = (() => {
             const pairings = po.round === 1 ? { east: po.east, west: po.west } : { east: po.eastNext, west: po.westNext };
             po.eastResults = SeasonEngine.simulatePlayoffRound(pairings.east, state.teamsPlayers);
             po.westResults = SeasonEngine.simulatePlayoffRound(pairings.west, state.teamsPlayers);
-            // 检查用户是否被淘汰
             const allRes = [...po.eastResults, ...po.westResults];
+            // 记录本轮出局球队：败者 exitRound = po.round（1=首轮, 2=半决赛, 3=分区决赛）
+            allRes.forEach(r => {
+                const loser = r.high.teamId === r.winner.teamId ? r.low : r.high;
+                po.exits[loser.teamId] = po.round;
+            });
+            const roundName = ["","首轮","半决赛","分区决赛","总决赛"][po.round];
             const myRes = allRes.find(r => r.high.teamId === myId || r.low.teamId === myId);
-            if (myRes) {
+            if (fast) {
+                // 紧凑汇总：本轮所有系列一览
+                const myWon = myRes ? myRes.winner.teamId === myId : null;
+                showRoundSummaryModal(roundName, allRes, myWon);
+            } else if (myRes) {
                 const myWon = myRes.winner.teamId === myId;
                 showPlayoffSeriesModal(myRes, myWon, po.round);
             }
@@ -1055,6 +1231,9 @@ const App = (() => {
             // 总决赛
             po.finalsResult = SeasonEngine.simulatePlayoffRound([po.finalsPair], state.teamsPlayers)[0];
             const champ = po.finalsResult.winner;
+            const loser = po.finalsPair.high.teamId === champ.teamId ? po.finalsPair.low : po.finalsPair.high;
+            po.exits[loser.teamId] = 4; // 总决赛败者
+            po.exits[champ.teamId] = 5; // 冠军
             state.champions.push({ year: state.year, team: champ.teamId, name: champ.name });
             const myWon = champ.teamId === myId;
             showFinalsModal(po.finalsResult, myWon);
@@ -1063,40 +1242,133 @@ const App = (() => {
         renderAll();
     }
 
+    // 一键模拟本轮（季后赛/总决赛）：紧凑汇总，不逐系列弹窗
+    function showRoundSummaryModal(roundName, allRes, myWon) {
+        const myId = state.manager.teamId;
+        const rows = allRes.map(r => {
+            const isMine = r.high.teamId === myId || r.low.teamId === myId;
+            const winnerAbbr = teamAbbr(r.winner.teamId);
+            const highAbbr = teamAbbr(r.high.teamId);
+            const lowAbbr = teamAbbr(r.low.teamId);
+            return `<tr class="${isMine?'me-row':''}">
+                <td>${highAbbr} vs ${lowAbbr}</td>
+                <td class="num">${r.highWins}-${r.lowWins}</td>
+                <td><b>${winnerAbbr}</b> 晋级</td>
+            </tr>`;
+        }).join("");
+        let title = `${roundName} 战报`;
+        if (myWon === true) title = `${roundName} · 你晋级了 ✔`;
+        else if (myWon === false) title = `${roundName} · 你被淘汰 ✘`;
+        showModal(`
+            <div class="modal-title">${title}</div>
+            <div class="table-wrap"><table><thead><tr><th>对阵</th><th class="num">比分</th><th>胜者</th></tr></thead><tbody>${rows}</tbody></table></div>
+            <div class="modal-actions"><button class="btn btn-primary" onclick="App.closeModal()">继续</button></div>
+        `);
+    }
+
+    // ============ 一键快进 ============
+    function fastAdvance() {
+        if (state.phase === "regular") {
+            simToEndOfRegularSeason();
+        } else if (state.phase === "playoffs" || state.phase === "finals") {
+            advancePlayoffs(true);
+            autoSave();
+        }
+    }
+
+    // 一键模拟剩余常规赛：跳过逐场比分，分块跑避免卡死 UI，结束进入季后赛
+    function simToEndOfRegularSeason() {
+        if (state.phase !== "regular") return;
+        const totalDays = state.schedule.length;
+        const startDay = state.currentDay;
+        showSimProgress(0);
+        const fastBtn = document.getElementById("fast-btn");
+        const advBtn = document.getElementById("advance-btn");
+        if (fastBtn) fastBtn.disabled = true;
+        if (advBtn) advBtn.disabled = true;
+        let lastPct = -1;
+        function tick() {
+            const t0 = Date.now();
+            // 每个时间片最多跑 50ms，避免阻塞 UI
+            while (state.currentDay < state.schedule.length && Date.now() - t0 < 50) {
+                advanceToUserGame();
+                if (state.currentDay >= state.schedule.length) break;
+            }
+            const pct = Math.min(100, Math.floor(((state.currentDay - startDay) / Math.max(1, totalDays - startDay)) * 100));
+            if (pct !== lastPct) { lastPct = pct; showSimProgress(pct); }
+            if (state.currentDay < state.schedule.length) {
+                setTimeout(tick, 0);
+            } else {
+                // 完成：常规赛结束 → 关进度条 → 评选奖项（弹窗保留）→ 季后赛
+                const r = state.records[state.manager.teamId];
+                // 重新启用按钮（renderAll 会刷新标签，但显式重置 disabled 更稳妥）
+                if (fastBtn) fastBtn.disabled = false;
+                if (advBtn) advBtn.disabled = false;
+                closeModal(); // 先关掉进度条弹窗
+                presentSeasonAwards(); // 再开奖项弹窗（会被保留，玩家可查看）
+                startPlayoffs();
+                autoSave();
+                renderAll();
+                toast(`常规赛结束：${r.win}胜${r.loss}负，进入季后赛 🏆`, "gold");
+            }
+        }
+        // 首个时间片同步执行：剩余天数较少时可一次跑完，避免无谓的异步等待
+        tick();
+    }
+
+    function showSimProgress(pct) {
+        showModal(`
+            <div class="modal-title">⏩ 快速模拟中</div>
+            <div class="muted center" style="padding:16px 0 12px">正在模拟剩余常规赛...</div>
+            <div class="progress-bar"><div style="width:${pct}%"></div></div>
+            <div class="center muted" style="margin-top:10px;font-size:12px">${pct}%</div>
+        `);
+    }
+
     // ============ 选秀 ============
     function startDraft() {
         state.year++;
         state.rookieClass = DraftEngine.generateRookieClass(state.year);
         // 计算选秀顺位：基于上赛季战绩
+        // playoffExitRound 来自 advancePlayoffs 累积写入的 state.playoffs.exits：
+        //   1=首轮, 2=半决赛, 3=分区决赛, 4=总决赛败者, 5=冠军
+        const exits = (state.playoffs && state.playoffs.exits) ? state.playoffs.exits : {};
         const standingsData = state.teams.map(t => {
             const r = state.records[t.id];
             const madePlayoffs = state.standings[t.conf==="East"?"east":"west"].slice(0,8).some(e=>e.teamId===t.id);
-            return { teamId: t.id, win: r.win, loss: r.loss, madePlayoffs, playoffExitRound: madePlayoffs ? 2 : 0 };
+            // 季后赛球队默认 exitRound=1（兜底，正常情况 exits 已记录）
+            const playoffExitRound = madePlayoffs ? (exits[t.id] || 1) : 0;
+            return { teamId: t.id, win: r.win, loss: r.loss, madePlayoffs, playoffExitRound };
         });
-        // 更细致的 playoffExitRound
-        if (state.playoffs) {
-            // 标记各队出局轮次
-            const markExit = (results, round) => {
-                results.forEach(r => {
-                    const loser = r.high.teamId === r.winner.teamId ? r.low : r.high;
-                    const sd = standingsData.find(s => s.teamId === loser.teamId);
-                    if (sd) sd.playoffExitRound = round;
-                });
-            };
-            if (state.playoffs.eastResults) { markExit(state.playoffs.eastResults, 1); markExit(state.playoffs.westResults, 1); }
-        }
-        // 冠军 = 走得最远
-        if (state.champions.length) {
-            const champId = state.champions[state.champions.length-1].team;
-            const sd = standingsData.find(s => s.teamId === champId);
-            if (sd) sd.playoffExitRound = 5;
-        }
         const order = SeasonEngineDraftOrder(standingsData);
         state.draftOrder = order.firstRound.concat(order.secondRound).map(s => s.teamId);
         state.draftPick = 0;
         state.phase = "draft";
-        toast(`${state.year} 年 NBA 选秀开始！`, "gold");
-        renderAll();
+        // 检查玩家是否有顺位（异常情况兜底：若玩家无顺位，直接跳过选秀）
+        const myId = state.manager.teamId;
+        const hasMyPick = state.draftOrder.indexOf(myId) >= 0;
+        if (!hasMyPick) {
+            // 异常：玩家无顺位，AI 自动完成整个选秀
+            while (state.draftPick < 60) {
+                const owner = state.draftOrder[state.draftPick] || state.teams[0].id;
+                const available = state.rookieClass.filter(r => r.t === null);
+                const roster = state.teamsPlayers[owner] || [];
+                const pick = DraftEngine.aiPick(available, roster);
+                if (pick) {
+                    DraftEngine.assignRookieToTeam(pick, owner, state.draftPick + 1);
+                    if (state.teamsPlayers[owner]) state.teamsPlayers[owner].push(pick);
+                    state.players.push(pick);
+                }
+                state.draftPick++;
+            }
+            toast(`${state.year} 年选秀已完成（自动模拟）`, "");
+        } else {
+            // 自动推进到玩家第一个顺位
+            aiDraftUntilMyTurnOrEnd();
+            toast(`${state.year} 年 NBA 选秀开始！轮到你第 #${state.draftPick+1} 顺位`, "gold");
+        }
+        renderView("draft");
+        autoSave();
     }
 
     function SeasonEngineDraftOrder(standingsData) {
@@ -1114,25 +1386,40 @@ const App = (() => {
             renderAll();
             return;
         }
-        const owner = state.draftOrder[state.draftPick];
-        if (owner === myId) {
-            // 等待玩家选择，不自动推进
-            toast("轮到你选秀了！请在右侧选择新秀", "gold");
-            renderAll();
+        // 轮到玩家：不推进，等待玩家点新秀卡（advance 按钮已禁用，这里只是兜底）
+        if (state.draftOrder[state.draftPick] === myId) {
+            toast("请在下方选择你的新秀", "gold");
             return;
         }
-        // AI 选择
-        const available = state.rookieClass.filter(r => r.t === null);
-        const roster = state.teamsPlayers[owner];
-        const pick = DraftEngine.aiPick(available, roster);
-        if (pick) {
-            DraftEngine.assignRookieToTeam(pick, owner, state.draftPick + 1);
-            roster.push(pick);
-            state.players.push(pick);
-            if (state.draftPick < 5) toast(`#${state.draftPick+1} ${teamAbbr(owner)} 选中 ${pick.n}`, "");
-        }
-        state.draftPick++;
+        // AI 连续选择，直到下一个玩家顺位或选秀结束（玩家不用点几十次）
+        aiDraftUntilMyTurnOrEnd();
         renderAll();
+        if (state.draftPick >= 60) {
+            // 选秀全部结束，提示再点一次进入自由市场
+            toast("选秀全部完成，点击右上角进入自由市场", "success");
+        } else {
+            toast(`轮到你第 #${state.draftPick+1} 顺位选择!`, "gold");
+        }
+    }
+
+    // AI 连续选秀，直到轮到玩家或选秀结束
+    function aiDraftUntilMyTurnOrEnd() {
+        const myId = state.manager.teamId;
+        let guard = 0;
+        while (state.draftPick < 60 && state.draftOrder[state.draftPick] !== myId && guard < 70) {
+            const owner = state.draftOrder[state.draftPick];
+            const available = state.rookieClass.filter(r => r.t === null);
+            const roster = state.teamsPlayers[owner];
+            const pick = DraftEngine.aiPick(available, roster);
+            if (pick) {
+                DraftEngine.assignRookieToTeam(pick, owner, state.draftPick + 1);
+                roster.push(pick);
+                state.players.push(pick);
+                if (state.draftPick < 5) toast(`#${state.draftPick+1} ${teamAbbr(owner)} 选中 ${pick.n}`, "");
+            }
+            state.draftPick++;
+            guard++;
+        }
     }
 
     function userDraftPick(rookieId) {
@@ -1145,17 +1432,32 @@ const App = (() => {
         state.players.push(rookie);
         toast(`你用 #${state.draftPick+1} 顺位选中 ${rookie.n}!`, "success");
         state.draftPick++;
-        // 自动模拟到下一个玩家顺位
-        renderAll();
+        // 玩家选完后，AI 自动连续选到下一个玩家顺位或结束（同步执行，避免 setTimeout 竞态）
+        aiDraftUntilMyTurnOrEnd();
         autoSave();
-        setTimeout(() => autoAdvanceDraft(), 200);
+        renderAll();
+        if (state.draftPick < 60 && state.draftOrder[state.draftPick] === myId) {
+            toast(`轮到你第 #${state.draftPick+1} 顺位选择!`, "gold");
+        } else if (state.draftPick >= 60) {
+            toast("选秀全部完成，点击右上角进入自由市场", "success");
+        }
     }
 
     function autoAdvanceDraft() {
+        // 保留供"模拟到我的顺位"按钮调用
         const myId = state.manager.teamId;
-        // 自动模拟到下一个玩家顺位或结束
-        let guard = 0;
-        while (state.draftPick < 60 && state.draftOrder[state.draftPick] !== myId && guard < 70) {
+        aiDraftUntilMyTurnOrEnd();
+        renderAll();
+        if (state.draftPick >= 60) {
+            toast("选秀全部完成", "success");
+        } else {
+            toast(`轮到你第 #${state.draftPick+1} 顺位选择!`, "gold");
+        }
+    }
+
+    // 跳过剩余选秀：AI 自动完成所有未选顺位，包括玩家的顺位
+    function skipRemainingDraft() {
+        while (state.draftPick < 60) {
             const owner = state.draftOrder[state.draftPick];
             const available = state.rookieClass.filter(r => r.t === null);
             const roster = state.teamsPlayers[owner];
@@ -1166,14 +1468,10 @@ const App = (() => {
                 state.players.push(pick);
             }
             state.draftPick++;
-            guard++;
         }
+        toast("选秀已跳过，进入自由市场", "success");
         renderAll();
-        if (state.draftPick >= 60) {
-            toast("选秀全部完成", "success");
-        } else {
-            toast(`轮到你第 #${state.draftPick+1} 顺位选择!`, "gold");
-        }
+        autoSave();
     }
 
     // ============ 自由市场后开始新赛季 ============
@@ -1211,7 +1509,8 @@ const App = (() => {
 
     // 记录球员职业生涯历史（每个赛季结束后调用）
     function recordPlayerHistory() {
-        const prevYear = state.year; // 刚结束的赛季年份
+        // 注意：startDraft 已把 state.year +1（进入新赛季），所以刚结束的赛季是 state.year - 1
+        const prevYear = state.year - 1;
         state.players.forEach(p => {
             if (!state.playerHistory[p.id]) state.playerHistory[p.id] = [];
             const acc = state.statAccum[p.t] && state.statAccum[p.t][p.id];
@@ -1230,7 +1529,9 @@ const App = (() => {
 
     // ============ 模态框 ============
     function showModal(html) {
-        document.getElementById("modal-box").innerHTML = html;
+        const box = document.getElementById("modal-box");
+        box.innerHTML = html;
+        box.scrollTop = 0; // 重置滚动位置，避免长弹窗关闭后开新弹窗停留底部
         document.getElementById("modal-overlay").classList.add("active");
     }
     function closeModal() {
@@ -1250,8 +1551,10 @@ const App = (() => {
         for (let i = 4; i < hq.length; i++) labels.push("OT" + (i-3));
         const qStr = hq.map((h,i)=>`${labels[i]} ${h}-${aq[i]}`).join("  ");
 
-        const homeName = teamAbbr(log.boxscore.home.players[0]?.t || (isHome?myId:log.opp));
-        const awayName = teamAbbr(log.boxscore.away.players[0]?.t || (isHome?log.opp:myId));
+        const homeId = log.boxscore.home.players[0]?.t || (isHome?myId:log.opp);
+        const awayId = log.boxscore.away.players[0]?.t || (isHome?log.opp:myId);
+        const homeName = teamAbbr(homeId);
+        const awayName = teamAbbr(awayId);
 
         const homeWon = log.boxscore.winner === "home";
         const resultText = log.win ? "胜利 🎉" : "惜败";
@@ -1265,10 +1568,10 @@ const App = (() => {
         };
 
         showModal(`
-            <div class="modal-title" style="color:${resultColor}">${resultText} — ${awayName} ${awayScore} : ${homeScore} ${homeName}</div>
+            <div class="modal-title" style="color:${resultColor}">${resultText} — ${teamLogo(awayId, 32)} ${awayName} ${awayScore} : ${homeScore} ${teamLogo(homeId, 32)} ${homeName}</div>
             <div class="boxscore">
-                <div class="team-score ${!homeWon?'winner':''}"><div class="name">${awayName} (客)</div><div class="score">${awayScore}</div></div>
-                <div class="team-score ${homeWon?'winner':''}"><div class="name">${homeName} (主)</div><div class="score">${homeScore}</div></div>
+                <div class="team-score ${!homeWon?'winner':''}">${teamLogo(awayId, 56)}<div class="name">${awayName} (客)</div><div class="score">${awayScore}</div></div>
+                <div class="team-score ${homeWon?'winner':''}">${teamLogo(homeId, 56)}<div class="name">${homeName} (主)</div><div class="score">${homeScore}</div></div>
             </div>
             <div class="quarters center muted mt-10">${qStr}${log.boxscore.ot?` (OT${log.boxscore.ot})`:''}</div>
             ${renderGameEvents(log.boxscore.events)}
@@ -1307,10 +1610,13 @@ const App = (() => {
         const myId = state.manager.teamId;
         const opp = res.high.teamId === myId ? res.low : res.high;
         const roundName = ["","首轮","半决赛","分区决赛","总决赛"][round];
+        // 我方胜场在前，对方在后
+        const myWins = res.high.teamId === myId ? res.highWins : res.lowWins;
+        const oppWins = res.high.teamId === myId ? res.lowWins : res.highWins;
         showModal(`
             <div class="modal-title" style="color:${myWon?'var(--success)':'var(--accent-light)'}">${roundName} ${myWon?'晋级! ✔':'被淘汰 ✘'}</div>
             <div style="text-align:center;font-size:18px;padding:16px">
-                ${teamAbbr(myId)} ${res.highWins}-${res.high.teamId===myId?res.lowWins:res.highWins} ... 实际: ${res.highWins}-${res.lowWins}<br>
+                ${teamLogo(myId, 56)} <b style="vertical-align:middle">${teamAbbr(myId)} <span style="font-size:24px">${myWins}-${oppWins}</span> ${teamAbbr(opp.teamId)}</b> ${teamLogo(opp.teamId, 56)}<br>
                 <span class="muted">对手: ${teamName(opp.teamId)}</span>
             </div>
             <div class="modal-actions"><button class="btn btn-primary" onclick="App.closeModal()">继续</button></div>
@@ -1320,13 +1626,30 @@ const App = (() => {
     function showFinalsModal(res, myWon) {
         const champ = res.winner;
         const myId = state.manager.teamId;
+        const champId = champ.teamId;
+        const loserId = res.high.teamId === champId ? res.low.teamId : res.high.teamId;
+        const champWins = res.high.teamId === champId ? res.highWins : res.lowWins;
+        const loserWins = res.high.teamId === champId ? res.lowWins : res.highWins;
         showModal(`
             <div class="modal-title" style="color:${myWon?'var(--gold)':'var(--accent-light)'};font-size:24px;text-align:center">
                 ${myWon?'🏆 你赢得了 NBA 总冠军!':'赛季结束'}</div>
-            <div style="text-align:center;font-size:20px;padding:20px">
-                ${myWon ? `恭喜 ${state.manager.name} 率领 ${teamName(myId)} 夺冠!` : `${champ.name} 夺得 ${state.year} 年总冠军`}
+            <div style="text-align:center;padding:20px">
+                <div style="display:flex;align-items:center;justify-content:center;gap:14px;margin-bottom:12px">
+                    <div style="text-align:center">
+                        ${teamLogo(champId, 64)}
+                        <div style="font-size:20px;font-weight:800;margin-top:4px">${teamAbbr(champId)}</div>
+                        <div style="font-size:11px;color:var(--gold)">冠军</div>
+                    </div>
+                    <div style="font-size:32px;font-weight:800;color:var(--gold)">${champWins}-${loserWins}</div>
+                    <div style="text-align:center;opacity:0.7">
+                        ${teamLogo(loserId, 48)}
+                        <div style="font-size:16px;font-weight:700;margin-top:4px">${teamAbbr(loserId)}</div>
+                    </div>
+                </div>
+                <div style="font-size:20px">
+                    ${myWon ? `恭喜 ${state.manager.name} 率领 ${teamName(myId)} 夺冠!` : `${champ.name} 夺得 ${state.year} 年总冠军`}
+                </div>
             </div>
-            <div class="muted center">总决赛 ${res.highWins}-${res.lowWins}</div>
             <div class="modal-actions"><button class="btn btn-primary" onclick="App.closeModal()">进入休赛期</button></div>
         `);
     }
@@ -1394,9 +1717,12 @@ const App = (() => {
 
     // ============ 事件绑定 ============
     function bindViewEvents() {
-        // 球员详情
+        // 球员详情（跳过带 data-remove 的交易移除按钮，避免点击 ✕ 时同时弹出详情）
         document.querySelectorAll("[data-pid]").forEach(el => {
-            el.addEventListener("click", () => showPlayerDetail(el.dataset.pid));
+            el.addEventListener("click", () => {
+                if (el.dataset.remove) return; // 交易移除按钮，交给 data-remove 处理
+                showPlayerDetail(el.dataset.pid);
+            });
         });
         // 球队详情（排名表/联盟总览中点击球队名）
         document.querySelectorAll("[data-teamid]").forEach(el => {
@@ -1425,6 +1751,12 @@ const App = (() => {
         document.querySelectorAll(".sign-fa").forEach(el => el.addEventListener("click", () => signFreeAgent(el.dataset.faid)));
         // 选秀
         document.querySelectorAll(".draft-pick").forEach(el => el.addEventListener("click", () => userDraftPick(el.dataset.rid)));
+        const autoToMine = document.getElementById("draft-auto-to-mine");
+        if (autoToMine) autoToMine.addEventListener("click", () => autoAdvanceDraft());
+        const skipRest = document.getElementById("draft-skip-rest");
+        if (skipRest) skipRest.addEventListener("click", () => {
+            if (confirm("跳过剩余选秀？AI 将自动完成所有未选顺位。")) skipRemainingDraft();
+        });
         // 数据看板榜单切换
         document.querySelectorAll(".stats-tab").forEach(el => el.addEventListener("click", () => {
             statsTab = el.dataset.statstab;
@@ -1474,7 +1806,7 @@ const App = (() => {
         showModal(`
             <div class="modal-title">
                 <div style="display:flex;align-items:center;gap:12px">
-                    <div style="width:8px;height:36px;background:${t.color};border-radius:4px"></div>
+                    <div class="team-detail-logo">${teamLogo(teamId, 64)}</div>
                     <div style="flex:1;min-width:0">
                         <div style="font-size:18px;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.city}${t.name} ${isMine?'<span class="tag tag-rookie" style="margin-left:4px">我的球队</span>':''}</div>
                         <div style="font-size:12px;color:var(--text-dim);font-weight:400">${t.abbr} · ${t.conf==="East"?"东部":"西部"} · ${t.div}赛区</div>
@@ -1511,19 +1843,43 @@ const App = (() => {
         const ageColor = p.a <= 24 ? 'var(--success)' : p.a >= 33 ? 'var(--nba-red-light)' : 'var(--text)';
         // 伤病状态
         const injuryHtml = p.injured ? `<div style="margin-top:10px;padding:8px 12px;background:rgba(231,76,60,0.15);border-radius:8px;color:var(--nba-red-light);font-size:13px">🚑 受伤中，预计缺阵 ${p.injured} 场</div>` : '';
-        // 获奖记录
+        // 获奖记录（兼容新旧字段：新字段 allNBAFirst/Second/Third 等，旧字段 allNBA 等）
         const awards = (state.awardsHistory || []).filter(a => {
+            const inFirst  = (a.allNBAFirst  || []).includes(pid);
+            const inSecond = (a.allNBASecond || []).includes(pid);
+            const inThird  = (a.allNBAThird  || []).includes(pid);
+            const inDefF   = (a.allDefFirst  || []).includes(pid);
+            const inDefS   = (a.allDefSecond || []).includes(pid);
+            const inRookF  = (a.allRookieFirst  || []).includes(pid);
+            const inRookS  = (a.allRookieSecond || []).includes(pid);
+            const inOldNBA = (a.allNBA || []).includes(pid);
+            const inOldDef = (a.allDefensive || []).includes(pid);
+            const inOldRook = (a.allRookie || []).includes(pid);
             return (a.mvp && a.mvp.player.id === pid) || (a.dpoy && a.dpoy.player.id === pid) || (a.roy && a.roy.player.id === pid)
-                || (a.allNBA || []).includes(pid) || (a.allDefensive || []).includes(pid) || (a.allRookie || []).includes(pid);
+                || (a.sixMan && a.sixMan.player.id === pid) || (a.mip && a.mip.player.id === pid)
+                || inFirst || inSecond || inThird || inDefF || inDefS || inRookF || inRookS
+                || inOldNBA || inOldDef || inOldRook;
         });
         const awardBadges = awards.map(a => {
             const items = [];
             if (a.mvp && a.mvp.player.id === pid) items.push('MVP');
             if (a.dpoy && a.dpoy.player.id === pid) items.push('DPOY');
             if (a.roy && a.roy.player.id === pid) items.push('ROY');
-            if ((a.allNBA || []).includes(pid)) items.push('最佳阵容');
-            if ((a.allDefensive || []).includes(pid)) items.push('防守阵');
-            if ((a.allRookie || []).includes(pid)) items.push('新秀阵');
+            if (a.sixMan && a.sixMan.player.id === pid) items.push('6MOY');
+            if (a.mip && a.mip.player.id === pid) items.push('MIP');
+            // 最佳阵容：标注阵次
+            if ((a.allNBAFirst || []).includes(pid)) items.push('一阵');
+            else if ((a.allNBASecond || []).includes(pid)) items.push('二阵');
+            else if ((a.allNBAThird || []).includes(pid)) items.push('三阵');
+            else if ((a.allNBA || []).includes(pid)) items.push('最佳阵容');
+            // 防守阵
+            if ((a.allDefFirst || []).includes(pid)) items.push('防守一阵');
+            else if ((a.allDefSecond || []).includes(pid)) items.push('防守二阵');
+            else if ((a.allDefensive || []).includes(pid)) items.push('防守阵');
+            // 新秀阵
+            if ((a.allRookieFirst || []).includes(pid)) items.push('新秀一阵');
+            else if ((a.allRookieSecond || []).includes(pid)) items.push('新秀二阵');
+            else if ((a.allRookie || []).includes(pid)) items.push('新秀阵');
             return `<span class="award-badge">${a.year} ${items.join('/')}</span>`;
         }).join('');
         const awardHtml = awardBadges ? `<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px">${awardBadges}</div>` : '';
@@ -1544,7 +1900,7 @@ const App = (() => {
                     <div class="player-ovr ${ovrClass(p.o)}" style="width:50px;height:50px;font-size:20px">${p.o}</div>
                     <div style="flex:1;min-width:0">
                         <div style="font-size:18px;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.n} ${p.injured?'🚑':''}</div>
-                        <div style="font-size:12px;color:var(--text-dim);font-weight:400"><span class="pos-${p.p}">${p.p}</span> · ${teamStr}</div>
+                        <div style="font-size:12px;color:var(--text-dim);font-weight:400"><span class="pos-${p.p}">${p.p}</span> · ${p.t ? teamLogo(p.t, 20) + ' ' : ''}${teamStr}</div>
                     </div>
                 </div>
             </div>
@@ -1554,7 +1910,7 @@ const App = (() => {
                 <div class="stat-box"><div class="value" style="color:${ageColor};font-size:20px">${p.a}</div><div class="label">年龄</div></div>
                 <div class="stat-box"><div class="value" style="font-size:18px">$${p.sal.toFixed(1)}M</div><div class="label">薪资</div></div>
                 <div class="stat-box"><div class="value" style="color:var(--gold);font-size:20px">${p.pot||p.o}</div><div class="label">潜力上限</div></div>
-                <div class="stat-box"><div class="value" style="font-size:18px">${p.t?teamAbbr(p.t):'FA'}</div><div class="label">所属</div></div>
+                <div class="stat-box"><div class="value" style="font-size:18px;display:flex;align-items:center;justify-content:center;gap:6px">${p.t ? teamLogo(p.t, 20) + teamAbbr(p.t) : 'FA'}</div><div class="label">所属</div></div>
             </div>
             <div class="card-title">能力雷达</div>
             ${skillBars}
@@ -1592,7 +1948,7 @@ const App = (() => {
     function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 
     return {
-        init, renderView, advance, closeModal, releasePlayer, showMoreMenu,
+        init, renderView, advance, fastAdvance, closeModal, releasePlayer, showMoreMenu,
         loadState, showSaveManager, showTacticsModal, showAwardsHistory,
         get state() { return state; },
     };
