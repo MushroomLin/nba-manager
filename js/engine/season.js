@@ -415,12 +415,12 @@ const SeasonEngine = (() => {
         const dpoyList = sorted(candidates, "defScore");
         // ROY 候选：本赛季是该球员的新秀赛季
         // 修复 bug：原代码用 isRookie===true，但 offseasonProgression 已在赛季开始前清除 isRookie，
-        // 导致 ROY 永远没人。改用 draftYear === state.year-1 判断（上赛季选秀进联盟的球员，
+        // 导致 ROY 永远没人。改用 draftYear === state.year 判断（上赛季选秀进联盟的球员，
         // 本赛季就是新秀赛季）。同时兼容旧逻辑：isRookie 仍为 true 也算新秀。
         const royList = sorted(candidates.filter(c => {
             if (c.player.isRookie === true) return true;
-            // draftYear 记录球员被选中的年份；state.year-1 是刚结束赛季的起始年
-            // 例：2025 年选秀 → draftYear=2025 → 2025-26 赛季是新秀赛季 → 赛季结束时 state.year=2025
+            // draftYear 记录球员被选中的年份；state.year 是刚结束赛季的起始年
+            // 例：2026 年选秀 → draftYear=2026 → 2026-27 赛季是新秀赛季 → 赛季结束时 state.year=2026
             // 所以 ROY 候选条件：draftYear === state.year
             if (c.player.draftYear === state.year) return true;
             // 兼容 lastRookieYear 标记

@@ -20,8 +20,8 @@ const NBAStats = (() => {
         loadingPromise = (async () => {
             try {
                 const [statsResp, mapResp] = await Promise.all([
-                    fetch('js/data/nba_stats.json?v=20260725q'),
-                    fetch('js/data/name_map.json?v=20260725q'),
+                    fetch('js/data/nba_stats.json?v=20260725r'),
+                    fetch('js/data/name_map.json?v=20260725r'),
                 ]);
                 if (!statsResp.ok || !mapResp.ok) throw new Error('HTTP error');
                 statsCache = await statsResp.json();

@@ -41,7 +41,7 @@ const App = (() => {
 
         state = {
             manager: { name: managerName, teamId },
-            year: 2025,
+            year: 2026,
             phase: "regular",
             teams,
             players,
