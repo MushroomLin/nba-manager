@@ -87,6 +87,7 @@ const DraftEngine = (() => {
                 ins, sh, pa, re, de, at, iq,
                 isRookie: true,
                 draftYear: year,
+                yrsInLeague: 0,  // 新秀合同期第 1 年（offseasonProgression 会 +1）
                 tier: template.tier,
             });
         }

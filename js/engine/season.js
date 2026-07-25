@@ -167,12 +167,18 @@ const SeasonEngine = (() => {
     }
 
     // 休赛期：球员成长与老化
+    // 返回 { changes, retired } —— changes 为重要成长记录，retired 为退役球员数组
     function offseasonProgression(players) {
         const changes = [];
+        const retired = [];
+        // 第一阶段：年龄增长 + 能力调整（暂不清除 isRookie，留给后续评选参考）
         players.forEach(p => {
             const before = { ...p };
             // 年龄老化
             p.a += 1;
+            // 在联盟年数 +1（用于新秀合同判断）；老存档球员默认按 5 年处理（已过新秀期）
+            if (p.yrsInLeague == null) p.yrsInLeague = 5;
+            p.yrsInLeague += 1;
             let delta = 0;
             if (p.a <= 23) {
                 // 年轻球员成长（朝潜力靠近）
@@ -189,8 +195,8 @@ const SeasonEngine = (() => {
             } else {
                 delta = randInt(-5, -1);
             }
-            // 新秀额外成长
-            if (p.isRookie && p.a <= 22) delta += randInt(1, 3);
+            // 新秀额外成长（仅对刚结束的新秀赛季生效，之后 isRookie 会被清掉）
+            if (p.isRookie && p.a <= 23) delta += randInt(1, 3);
             p.o = Math.max(40, Math.min(99, p.o + delta));
             // 各项能力同步微调
             const skills = ["ins","sh","pa","re","de","at","iq"];
@@ -202,20 +208,79 @@ const SeasonEngine = (() => {
 
             // 薪资随表现调整（简化：能力变化对应薪资）
             p.sal = Math.round(adjustSalaryByAge(p) * 10) / 10;
-            p.isRookie = false; // 进入第二季不再算新秀
 
             if (Math.abs(delta) >= 2) {
                 changes.push({ player: p, delta, before: before.o });
             }
         });
-        return changes;
+
+        // 第二阶段：评估退役
+        // 规则：35岁以上老将按能力衰退程度概率退役；38岁以上强制退役概率提升；
+        // 保证联盟每年有合理数量的球员退役（约 20-30 人），与新秀补充量平衡
+        players.forEach(p => {
+            if (p.isFiller) {
+                // 填充球员：能力过低或年龄过大直接淘汰（不进入自由市场）
+                if (p.o < 65 || p.a > 36) {
+                    retired.push(p);
+                }
+                return;
+            }
+            // 真实球员：基于年龄和能力的退役概率
+            let retireProb = 0;
+            if (p.a >= 40) retireProb = 0.85;
+            else if (p.a >= 38) retireProb = 0.55;
+            else if (p.a >= 36) retireProb = 0.30;
+            else if (p.a >= 34) retireProb = 0.12;
+            else if (p.a >= 32) retireProb = 0.04;
+            // 能力低于阈值的退役概率增加（打不动了）
+            if (p.o < 68) retireProb += 0.15;
+            if (p.o < 62) retireProb += 0.30;
+            // 受过重伤（赛季报销）的老将更易退役
+            if (p.injured > 60 && p.a > 30) retireProb += 0.15;
+
+            if (Math.random() < retireProb) {
+                retired.push(p);
+            }
+        });
+
+        // 第三阶段：从联盟移除退役球员（保留在 state.players 供历史查询，但从球队名单移除）
+        // 注意：这里只标记 isRetired，由调用方负责从 teamsPlayers 中清理
+        retired.forEach(p => {
+            p.isRetired = true;
+            p.t = null;
+            // 进入第二季不再算新秀（退役的当然不算）
+            p.isRookie = false;
+        });
+
+        // 第四阶段：清除未退役球员的 isRookie 标记
+        // 注意：评选奖项发生在常规赛结束（presentSeasonAwards），此时 isRookie 已经是 false，
+        // 这会导致 ROY 找不到新秀。修复方案：把 isRookie 清除时机改到「新赛季的第一次比赛后」。
+        // 但更简单的做法：在 computeAwards 中通过 draftYear 字段判断是否为新秀赛季。
+        // 这里仍然清除 isRookie，保持与新秀「只享受一年新秀待遇」的语义一致。
+        players.forEach(p => {
+            if (!p.isRetired && p.isRookie) {
+                // 把新秀赛季信息存入 lastRookieYear，供 computeAwards 评选 ROY 使用
+                p.lastRookieYear = p.draftYear;
+                p.isRookie = false;
+            }
+        });
+
+        return { changes, retired };
     }
 
     function adjustSalaryByAge(p) {
         const base = TradeEngine.salaryForOvr(p.o);
-        if (p.a > 34) return base * 0.7;
-        if (p.a > 32) return base * 0.85;
-        if (p.a < 24 && p.o >= 80) return base * 1.1; // 新星顶薪
+        // 新秀合同：选秀后前 4 个赛季享受新秀合同价（约为市场价 40-60%）
+        // draftYear 记录选秀年份；当前赛季序号 = state.year - draftYear + 1
+        // 但此函数无法访问 state，改用 playerYrsInLeague 字段（由 offseasonProgression 维护）
+        if (p.yrsInLeague != null && p.yrsInLeague <= 4) {
+            return base * 0.5;  // 新秀合同期内
+        }
+        // 老将衰退打折
+        if (p.a >= 38) return base * 0.5;
+        if (p.a >= 36) return base * 0.65;
+        if (p.a >= 34) return base * 0.8;
+        if (p.a >= 32) return base * 0.9;
         return base;
     }
 
@@ -348,13 +413,28 @@ const SeasonEngine = (() => {
         const sorted = (arr, key, desc = true) => arr.slice().sort((a, b) => desc ? b[key] - a[key] : a[key] - b[key]);
         const mvpList = sorted(candidates, "mvpScore");
         const dpoyList = sorted(candidates, "defScore");
-        const royList = sorted(candidates.filter(c => c.player.isRookie === true), "mvpScore");
+        // ROY 候选：本赛季是该球员的新秀赛季
+        // 修复 bug：原代码用 isRookie===true，但 offseasonProgression 已在赛季开始前清除 isRookie，
+        // 导致 ROY 永远没人。改用 draftYear === state.year-1 判断（上赛季选秀进联盟的球员，
+        // 本赛季就是新秀赛季）。同时兼容旧逻辑：isRookie 仍为 true 也算新秀。
+        const royList = sorted(candidates.filter(c => {
+            if (c.player.isRookie === true) return true;
+            // draftYear 记录球员被选中的年份；state.year-1 是刚结束赛季的起始年
+            // 例：2025 年选秀 → draftYear=2025 → 2025-26 赛季是新秀赛季 → 赛季结束时 state.year=2025
+            // 所以 ROY 候选条件：draftYear === state.year
+            if (c.player.draftYear === state.year) return true;
+            // 兼容 lastRookieYear 标记
+            if (c.player.lastRookieYear === state.year) return true;
+            return false;
+        }), "mvpScore");
         const sixManList = sorted(candidates.filter(c => c.isBench), "sixManScore");
         const mipList = sorted(candidates.filter(c => {
             if (c.ovrDelta < 2) return false;
             // 排除上赛季已成名的超巨（hist 存在且 lastOvr>=82）
             const h = playerHistory[c.player.id];
             if (h && h.length && h[h.length - 1].ovr >= 82) return false;
+            // 排除新秀（新秀赛季不参评 MIP，因为没有上赛季数据可比）
+            if (c.player.draftYear === state.year) return false;
             return true;
         }), "mipScore");
 

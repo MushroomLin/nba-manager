@@ -1120,8 +1120,29 @@ const App = (() => {
         updateStandings();
         const awards = SeasonEngine.computeAwards(state);
         state.awardsHistory.push(awards);
-        // 把奖项标记到球员对象上，便于球员详情展示
-        if (awards.mvp) awards.mvp.player._awards = (awards.mvp.player._awards || []);
+        // 把奖项标记同步到所有获奖球员对象上，便于球员详情展示
+        // 修复 bug：原代码只给 MVP 球员追加 _awards，ROY/DPOY/MIP/6MOY 等奖项未记录
+        const tagAward = (c, label) => {
+            if (!c || !c.player) return;
+            if (!c.player._awards) c.player._awards = [];
+            c.player._awards.push({ year: awards.year, type: label });
+        };
+        tagAward(awards.mvp, 'MVP');
+        tagAward(awards.dpoy, 'DPOY');
+        tagAward(awards.roy, 'ROY');
+        tagAward(awards.sixMan, '6MOY');
+        tagAward(awards.mip, 'MIP');
+        // 最佳阵容
+        const tagTeamAward = (details, label) => {
+            (details || []).forEach(c => tagAward(c, label));
+        };
+        tagTeamAward(awards.allNBAFirstDetail, '最佳阵容一阵');
+        tagTeamAward(awards.allNBASecondDetail, '最佳阵容二阵');
+        tagTeamAward(awards.allNBAThirdDetail, '最佳阵容三阵');
+        tagTeamAward(awards.allDefFirstDetail, '最佳防守一阵');
+        tagTeamAward(awards.allDefSecondDetail, '最佳防守二阵');
+        tagTeamAward(awards.allRookieFirstDetail, '新秀一阵');
+        tagTeamAward(awards.allRookieSecondDetail, '新秀二阵');
         showAwardsModal(awards);
     }
 
@@ -1486,14 +1507,34 @@ const App = (() => {
 
     // ============ 自由市场后开始新赛季 ============
     function startNewSeason() {
-        // 球员成长与老化
-        const changes = SeasonEngine.offseasonProgression(state.players);
-        // 记录球员职业生涯历史快照（Feature 3）—— 基于刚结束赛季的数据
+        // 1. 先记录球员职业生涯历史快照（基于刚结束赛季、成长前的 ovr）
+        //    修复 MIP bug：原代码在 offseasonProgression 之后调用 recordPlayerHistory，
+        //    导致 playerHistory 记录的是成长后的 ovr，ovrDelta 永远为 0，MIP 无人获奖。
         recordPlayerHistory();
-        // 清空伤病（休赛期全部康复）
+        // 2. 球员成长与老化（含退役评估）
+        const progression = SeasonEngine.offseasonProgression(state.players);
+        const changes = progression.changes;
+        const retired = progression.retired;
+        // 3. 清理退役球员：从各球队名单移除，并从 players 数组中删除
+        if (retired.length > 0) {
+            const retiredIds = new Set(retired.map(p => p.id));
+            state.teams.forEach(t => {
+                state.teamsPlayers[t.id] = state.teamsPlayers[t.id].filter(p => !retiredIds.has(p.id));
+            });
+            state.players = state.players.filter(p => !retiredIds.has(p.id));
+        }
+        // 4. 退役清理后，球队名单可能不足 14 人，补充替补填充球员
+        state.teams.forEach(t => {
+            while (state.teamsPlayers[t.id].length < 14) {
+                const fp = generateBenchPlayer(t.id, Date.now() % 1000 + state.teamsPlayers[t.id].length);
+                state.players.push(fp);
+                state.teamsPlayers[t.id].push(fp);
+            }
+        });
+        // 5. 清空伤病（休赛期全部康复）
         state.players.forEach(p => p.injured = 0);
         state.injuryLog = [];
-        // 重建统计
+        // 6. 重建统计
         state.teams.forEach(t => {
             state.records[t.id] = { win:0, loss:0, streak:0, ptsFor:0, ptsAgt:0 };
             state.statAccum[t.id] = {};
@@ -1509,8 +1550,15 @@ const App = (() => {
         if (changes.length) {
             const top = changes.filter(c => c.delta >= 3).slice(0,5);
             if (top.length) {
-                const msg = top.map(c => `${c.player.n} ${c.delta>0?'+':''}${c.delta} (${c.before}→${c.player.o})`).join("\n");
                 setTimeout(() => showGrowthModal(changes), 300);
+            }
+        }
+        // 退役通知
+        if (retired.length > 0) {
+            const notable = retired.filter(p => !p.isFiller && p.o >= 80).slice(0, 5);
+            if (notable.length) {
+                const names = notable.map(p => `${p.n}(${p.a}岁,${p.o})`).join('、');
+                setTimeout(() => toast(`📅 退役公告: ${names} 等共 ${retired.length} 人退役`, ""), 800);
             }
         }
         toast(`${state.year}-${state.year+1} 新赛季开始！`, "success");

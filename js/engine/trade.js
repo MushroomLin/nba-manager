@@ -116,17 +116,22 @@ const TradeEngine = (() => {
         return val;
     }
 
-    // 由能力推算合理薪资
+    // 由能力推算合理薪资（单位：百万美元）
+    // 工资帽约 140M，球队 14-15 人；薪资分布参考真实 NBA：
+    //   超巨 35M、明星 28M、全明星 22M、首发 15M、轮换 8M、替补 3M、边缘 2M
+    // 调整后典型球队总薪资约 130-150M，接近工资帽
     function salaryForOvr(ovr) {
-        if (ovr >= 93) return 50;
-        if (ovr >= 89) return 42;
-        if (ovr >= 85) return 33;
-        if (ovr >= 82) return 26;
-        if (ovr >= 79) return 20;
-        if (ovr >= 76) return 14;
-        if (ovr >= 73) return 9;
-        if (ovr >= 70) return 5;
-        return 3;
+        if (ovr >= 93) return 38;   // 超级巨星（顶薪）
+        if (ovr >= 90) return 33;   // 一线巨星
+        if (ovr >= 87) return 28;   // 全明星
+        if (ovr >= 84) return 22;   // 准全明星
+        if (ovr >= 81) return 17;   // 优质首发
+        if (ovr >= 78) return 12;   // 普通首发
+        if (ovr >= 75) return 8;    // 主要轮换
+        if (ovr >= 72) return 5;    // 替补轮换
+        if (ovr >= 69) return 3;    // 深度替补
+        if (ovr >= 65) return 2;    // 边缘球员
+        return 1.5;                  // 饮水机管理员
     }
 
     // 执行交易（直接修改两队名单）
