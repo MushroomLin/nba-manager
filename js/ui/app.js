@@ -1918,7 +1918,6 @@ const App = (() => {
         const s = acc && acc.gp > 0 ? acc : null;
         const skills = [["内线",p.ins],["投篮",p.sh],["传球",p.pa],["篮板",p.re],["防守",p.de],["运动",p.at],["球商",p.iq]];
         const skillBars = skills.map(([k,v]) => `<div class="skill-bar-row"><div class="skill-bar-label"><span>${k}</span><span><b>${v}</b></span></div><div class="skill-bar-track"><div class="skill-bar-fill" style="width:${v}%"></div></div></div>`).join("");
-        const statHtml = s ? `<div class="card-title mt-20">赛季场均 (${s.gp}场)</div><div class="stat-grid"><div class="stat-box"><div class="value">${(s.pts/s.gp).toFixed(1)}</div><div class="label">得分</div></div><div class="stat-box"><div class="value">${(s.reb/s.gp).toFixed(1)}</div><div class="label">篮板</div></div><div class="stat-box"><div class="value">${(s.ast/s.gp).toFixed(1)}</div><div class="label">助攻</div></div><div class="stat-box"><div class="value">${(s.stl/s.gp).toFixed(1)}</div><div class="label">抢断</div></div></div>` : '<div class="muted center mt-20" style="padding:14px;background:var(--bg-elevated);border-radius:8px">本赛季暂无数据</div>';
         const teamStr = p.t ? teamName(p.t) : '自由球员';
         const ageColor = p.a <= 24 ? 'var(--success)' : p.a >= 33 ? 'var(--nba-red-light)' : 'var(--text)';
         // 伤病状态
@@ -1963,17 +1962,39 @@ const App = (() => {
             return `<span class="award-badge">${a.year} ${items.join('/')}</span>`;
         }).join('');
         const awardHtml = awardBadges ? `<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px">${awardBadges}</div>` : '';
-        // 职业生涯历史
+
+        // ===== 合并生涯数据：真实NBA历史 + 游戏内赛季 =====
+        // 1. 收集游戏内赛季数据：playerHistory（历史赛季）+ statAccum（当前赛季）
+        const gameSeasons = [];
         const hist = (state.playerHistory || {})[pid] || [];
-        const histHtml = hist.length > 0 ? (() => {
-            const rows = hist.map(h => `<tr><td class="num">${h.year}</td><td class="num">${h.age}</td><td class="num"><b style="color:${h.ovr>=85?'var(--gold)':h.ovr>=75?'var(--success)':'var(--text)'}">${h.ovr}</b></td><td>${h.teamId?teamAbbr(h.teamId):'-'}</td><td class="num">${h.gp}</td><td class="num">${h.pts}</td><td class="num">${h.reb}</td><td class="num">${h.ast}</td></tr>`).join("");
-            // OVR 变化迷你图
-            const trend = hist.map(h => h.ovr);
-            const minV = Math.min(...trend), maxV = Math.max(...trend);
-            const trendStr = hist.length > 1 && trend[hist.length-1] > trend[0] ? `📈 ${trend[0]}→${trend[hist.length-1]}` : hist.length > 1 && trend[hist.length-1] < trend[0] ? `📉 ${trend[0]}→${trend[hist.length-1]}` : '';
-            return `<div class="card-title mt-20">职业生涯 <span class="muted" style="font-size:11px;text-transform:none">${trendStr}</span></div>
-                <div class="table-wrap"><table><thead><tr><th class="num">年</th><th class="num">龄</th><th class="num">OVR</th><th>队</th><th class="num">场</th><th class="num">分</th><th class="num">板</th><th class="num">助</th></tr></thead><tbody>${rows}</tbody></table></div>`;
-        })() : '';
+        hist.forEach(h => {
+            gameSeasons.push({
+                year: h.year,
+                age: h.age,
+                ovr: h.ovr,
+                teamId: h.teamId,
+                gp: h.gp,
+                pts: h.pts,
+                reb: h.reb,
+                ast: h.ast,
+            });
+        });
+        // 当前赛季数据追加（如果已开打）
+        if (s) {
+            gameSeasons.push({
+                year: state.year,
+                age: p.a,
+                ovr: p.o,
+                teamId: p.t,
+                gp: s.gp,
+                pts: +(s.pts / s.gp).toFixed(1),
+                reb: +(s.reb / s.gp).toFixed(1),
+                ast: +(s.ast / s.gp).toFixed(1),
+            });
+        }
+        // 2. 渲染统一的生涯数据区块
+        const careerHtml = renderMergedCareerHtml(p, gameSeasons);
+
         showModal(`
             <div class="modal-title">
                 <div style="display:flex;align-items:center;gap:12px">
@@ -1994,85 +2015,113 @@ const App = (() => {
             </div>
             <div class="card-title">能力雷达</div>
             ${skillBars}
-            ${statHtml}
-            ${histHtml}
-            ${renderRealCareerHtml(p)}
+            ${careerHtml}
             ${isMine ? `<div class="modal-actions"><button class="btn" onclick="App.releasePlayer('${pid}')">释放球员</button><button class="btn btn-primary" onclick="App.closeModal()">关闭</button></div>` : `<div class="modal-actions"><button class="btn btn-primary" onclick="App.closeModal()">关闭</button></div>`}
         `);
     }
 
-    // 渲染「真实 NBA 生涯数据」区块（基于 stats.nba.com 历史数据）
-    function renderRealCareerHtml(p) {
+    // 渲染合并后的生涯数据区块（真实NBA历史 + 游戏内赛季统一展示）
+    function renderMergedCareerHtml(p, gameSeasons) {
+        // 数据未加载：尝试触发加载
         if (!NBAStats.ready) {
-            // 数据未加载完，提示并触发加载（下次打开球员详情时会显示）
             NBAStats.ensureLoaded();
-            return `<div class="card-title mt-20">真实 NBA 生涯</div>
-                <div class="muted center" style="padding:14px;background:var(--bg-elevated);border-radius:8px;font-size:12px">⏳ 真实数据加载中，稍后重试</div>`;
         }
-        const nbaId = NBAStats.nbaIdByZh(p.n);
-        if (nbaId == null) {
-            return `<div class="card-title mt-20">真实 NBA 生涯</div>
-                <div class="muted center" style="padding:14px;background:var(--bg-elevated);border-radius:8px;font-size:12px">该球员无真实 NBA 数据（虚构或新秀未收录）</div>`;
+
+        const nbaId = NBAStats.ready ? NBAStats.nbaIdByZh(p.n) : null;
+        const realData = nbaId != null ? NBAStats.statsByNbaId(nbaId) : null;
+
+        // 合并赛季数据
+        const merged = NBAStats.ready ? NBAStats.mergeSeasons(nbaId, gameSeasons) : gameSeasons.map(h => ({
+            ...h, team: h.teamId ? null : '-', _teamId: h.teamId, min: 0, stl: 0, blk: 0, tov: 0,
+            fgm: 0, fga: 0, fg3m: 0, fg3a: 0, ftm: 0, fta: 0,
+            fg_pct: 0, fg3_pct: 0, ft_pct: 0, source: 'game'
+        }));
+
+        if (merged.length === 0) {
+            return `<div class="card-title mt-20">职业生涯数据</div>
+                <div class="muted center" style="padding:14px;background:var(--bg-elevated);border-radius:8px;font-size:12px">暂无生涯数据（新赛季开始后才有）</div>`;
         }
-        const data = NBAStats.statsByNbaId(nbaId);
-        if (!data || !data.seasons || data.seasons.length === 0) {
-            return `<div class="card-title mt-20">真实 NBA 生涯</div>
-                <div class="muted center" style="padding:14px;background:var(--bg-elevated);border-radius:8px;font-size:12px">无可用赛季数据</div>`;
+
+        // 生涯汇总（基于合并后的全部赛季）
+        const career = NBAStats.careerSummary(merged);
+
+        // 球员基本信息（来自真实数据）
+        let infoHtml = '';
+        if (realData) {
+            const draftStr = realData.draft_year && realData.draft_year !== 'Undrafted'
+                ? `${realData.draft_year}年第${realData.draft_round}轮 #${realData.draft_number}`
+                : (realData.draft_year || '未选秀');
+            infoHtml = `
+                <div style="display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--text-dim);margin-bottom:10px">
+                    <span>🎭 ${realData.name}</span>
+                    ${realData.height ? `<span>📏 ${realData.height}</span>` : ''}
+                    ${realData.weight ? `<span>⚖️ ${realData.weight}lb</span>` : ''}
+                    ${realData.college && realData.college !== 'None' ? `<span>🎓 ${realData.college}</span>` : ''}
+                    ${realData.country ? `<span>🌐 ${realData.country}</span>` : ''}
+                    <span>📋 ${draftStr}</span>
+                </div>`;
         }
-        // 生涯汇总
-        const career = NBAStats.careerSummary(data.seasons);
-        const careerHtml = career ? `
+
+        // 生涯汇总卡片
+        const careerSummaryHtml = career ? `
             <div class="stat-grid" style="margin-bottom:10px">
                 <div class="stat-box"><div class="value" style="color:var(--gold);font-size:18px">${career.gp}</div><div class="label">总场次</div></div>
                 <div class="stat-box"><div class="value" style="font-size:16px">${career.seasons}</div><div class="label">赛季数</div></div>
                 <div class="stat-box"><div class="value" style="font-size:18px">${career.pts}</div><div class="label">生涯场均分</div></div>
                 <div class="stat-box"><div class="value" style="font-size:16px">${career.reb}</div><div class="label">场均板</div></div>
                 <div class="stat-box"><div class="value" style="font-size:16px">${career.ast}</div><div class="label">场均助</div></div>
+                <div class="stat-box"><div class="value" style="font-size:14px">${career.stl}</div><div class="label">场均断</div></div>
+                <div class="stat-box"><div class="value" style="font-size:14px">${career.blk}</div><div class="label">场均帽</div></div>
                 <div class="stat-box"><div class="value" style="font-size:14px">${(career.fg_pct*100).toFixed(1)}%</div><div class="label">命中率</div></div>
                 <div class="stat-box"><div class="value" style="font-size:14px">${(career.fg3_pct*100).toFixed(1)}%</div><div class="label">三分率</div></div>
                 <div class="stat-box"><div class="value" style="font-size:14px">${(career.ft_pct*100).toFixed(1)}%</div><div class="label">罚球率</div></div>
             </div>` : '';
-        // 历年赛季表（每行一年）
-        const rows = data.seasons.slice().reverse().map(s => {
+
+        // 历年赛季表（最新在上）
+        const rows = merged.slice().reverse().map(s => {
+            const teamStr = s.source === 'game' && s._teamId
+                ? teamAbbr(s._teamId)
+                : (s.team || '-');
+            const sourceTag = s.source === 'real'
+                ? '<span style="font-size:9px;color:var(--text-dim);margin-left:2px">📊</span>'
+                : '<span style="font-size:9px;color:var(--nba-blue);margin-left:2px">🎮</span>';
             const fgPct = s.fg_pct ? (s.fg_pct*100).toFixed(1)+'%' : '-';
             const fg3Pct = s.fg3_pct ? (s.fg3_pct*100).toFixed(1)+'%' : '-';
             const ftPct = s.ft_pct ? (s.ft_pct*100).toFixed(1)+'%' : '-';
+            const ovrCell = s.ovr != null
+                ? `<td class="num"><b style="color:${s.ovr>=85?'var(--gold)':s.ovr>=75?'var(--success)':'var(--text)'}">${s.ovr}</b></td>`
+                : '<td class="num muted">-</td>';
             return `<tr>
-                <td class="num">${s.year-1}-${String(s.year).slice(-2)}</td>
-                <td>${s.team||'-'}</td>
+                <td class="num">${s.year-1}-${String(s.year).slice(-2)}${sourceTag}</td>
+                <td>${teamStr}</td>
+                ${ovrCell}
+                <td class="num">${s.age||'-'}</td>
                 <td class="num">${s.gp||0}</td>
-                <td class="num">${s.min||0}</td>
+                <td class="num">${s.min? s.min.toFixed(1):'-'}</td>
                 <td class="num"><b>${s.pts||0}</b></td>
                 <td class="num">${s.reb||0}</td>
                 <td class="num">${s.ast||0}</td>
-                <td class="num">${s.stl||0}</td>
-                <td class="num">${s.blk||0}</td>
+                <td class="num">${s.stl||'-'}</td>
+                <td class="num">${s.blk||'-'}</td>
                 <td class="num">${fgPct}</td>
                 <td class="num">${fg3Pct}</td>
                 <td class="num">${ftPct}</td>
             </tr>`;
         }).join('');
-        // 球员基本信息
-        const draftStr = data.draft_year && data.draft_year !== 'Undrafted'
-            ? `${data.draft_year}年第${data.draft_round}轮 #${data.draft_number}`
-            : (data.draft_year || '未选秀');
-        const infoHtml = `
-            <div style="display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--text-dim);margin-bottom:10px">
-                <span>🎭 ${data.name}</span>
-                ${data.height ? `<span>📏 ${data.height}</span>` : ''}
-                ${data.weight ? `<span>⚖️ ${data.weight}lb</span>` : ''}
-                ${data.college && data.college !== 'None' ? `<span>🎓 ${data.college}</span>` : ''}
-                ${data.country ? `<span>🌐 ${data.country}</span>` : ''}
-                <span>📋 ${draftStr}</span>
-            </div>`;
+
+        const titleStr = realData
+            ? `职业生涯数据 <span class="muted" style="font-size:11px;text-transform:none">📊真实 + 🎮游戏</span>`
+            : `职业生涯数据 <span class="muted" style="font-size:11px;text-transform:none">🎮游戏内</span>`;
+
         return `
-            <div class="card-title mt-20">真实 NBA 生涯 <span class="muted" style="font-size:11px;text-transform:none">数据源: stats.nba.com</span></div>
+            <div class="card-title mt-20">${titleStr}</div>
             ${infoHtml}
-            ${careerHtml}
+            ${careerSummaryHtml}
             <div class="table-wrap">
                 <table class="stats-table">
                     <thead><tr>
-                        <th>赛季</th><th>队</th><th class="num">场</th><th class="num">分钟</th>
+                        <th>赛季</th><th>队</th><th class="num">OVR</th><th class="num">龄</th>
+                        <th class="num">场</th><th class="num">分钟</th>
                         <th class="num">分</th><th class="num">板</th><th class="num">助</th>
                         <th class="num">断</th><th class="num">帽</th>
                         <th class="num">FG%</th><th class="num">3P%</th><th class="num">FT%</th>
@@ -2080,6 +2129,12 @@ const App = (() => {
                     <tbody>${rows}</tbody>
                 </table>
             </div>`;
+    }
+
+    // 渲染「真实 NBA 生涯数据」区块（基于 stats.nba.com 历史数据）
+    // 已废弃：合并到 renderMergedCareerHtml 中统一展示，保留函数避免外部引用报错
+    function renderRealCareerHtml(p) {
+        return renderMergedCareerHtml(p, []);
     }
 
     // ============ NBA 真实数据视图（浏览全联盟 582 名现役球员历史数据）============

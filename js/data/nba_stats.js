@@ -20,8 +20,8 @@ const NBAStats = (() => {
         loadingPromise = (async () => {
             try {
                 const [statsResp, mapResp] = await Promise.all([
-                    fetch('js/data/nba_stats.json?v=20260725r'),
-                    fetch('js/data/name_map.json?v=20260725r'),
+                    fetch('js/data/nba_stats.json?v=20260725s'),
+                    fetch('js/data/name_map.json?v=20260725s'),
                 ]);
                 if (!statsResp.ok || !mapResp.ok) throw new Error('HTTP error');
                 statsCache = await statsResp.json();
@@ -92,6 +92,79 @@ const NBAStats = (() => {
         };
     }
 
+    // 合并「真实NBA历史赛季」与「游戏内模拟赛季」为统一的赛季列表
+    // 真实数据覆盖 2003-2026，游戏内数据从 2027 起，按 year 去重合并
+    // gameSeasons: 游戏内 playerHistory 记录 [{year, age, ovr, teamId, gp, pts, reb, ast}]
+    //              + 当前赛季 statAccum 数据
+    // 返回统一格式: [{year, team, age, gp, min, pts, reb, ast, stl, blk, tov,
+    //                fgm, fga, fg3m, fg3a, ftm, fta, fg_pct, fg3_pct, ft_pct, source}]
+    //   source: 'real'=真实NBA, 'game'=游戏内
+    function mergeSeasons(nbaId, gameSeasons) {
+        const merged = [];
+        const seenYears = new Set();
+
+        // 1. 真实 NBA 历史赛季
+        const data = statsByNbaId(nbaId);
+        if (data && data.seasons) {
+            data.seasons.forEach(s => {
+                merged.push({
+                    year: s.year,
+                    team: s.team || '-',
+                    age: s.age || null,
+                    gp: s.gp || 0,
+                    min: s.min || 0,
+                    pts: s.pts || 0,
+                    reb: s.reb || 0,
+                    ast: s.ast || 0,
+                    stl: s.stl || 0,
+                    blk: s.blk || 0,
+                    tov: s.tov || 0,
+                    fgm: s.fgm || 0,
+                    fga: s.fga || 0,
+                    fg3m: s.fg3m || 0,
+                    fg3a: s.fg3a || 0,
+                    ftm: s.ftm || 0,
+                    fta: s.fta || 0,
+                    fg_pct: s.fg_pct || 0,
+                    fg3_pct: s.fg3_pct || 0,
+                    ft_pct: s.ft_pct || 0,
+                    ovr: null,
+                    source: 'real',
+                });
+                seenYears.add(s.year);
+            });
+        }
+
+        // 2. 游戏内赛季（playerHistory + 当前 statAccum）
+        if (gameSeasons && gameSeasons.length > 0) {
+            gameSeasons.forEach(h => {
+                // 跳过真实数据已覆盖的年份（理论上不会冲突，游戏内年份 >= 2027）
+                if (seenYears.has(h.year)) return;
+                merged.push({
+                    year: h.year,
+                    team: h.teamId ? null : '-',  // teamId 在 UI 层转 abbr
+                    _teamId: h.teamId || null,
+                    age: h.age || null,
+                    gp: h.gp || 0,
+                    min: 0,  // 游戏内历史未记录分钟
+                    pts: h.pts || 0,
+                    reb: h.reb || 0,
+                    ast: h.ast || 0,
+                    stl: 0, blk: 0, tov: 0,
+                    fgm: 0, fga: 0, fg3m: 0, fg3a: 0, ftm: 0, fta: 0,
+                    fg_pct: 0, fg3_pct: 0, ft_pct: 0,
+                    ovr: h.ovr || null,  // 游戏内特有：能力值
+                    source: 'game',
+                });
+                seenYears.add(h.year);
+            });
+        }
+
+        // 按 year 升序
+        merged.sort((a, b) => a.year - b.year);
+        return merged;
+    }
+
     return {
         ensureLoaded,
         getNameMap,
@@ -99,6 +172,7 @@ const NBAStats = (() => {
         nbaIdByZh,
         statsByNbaId,
         careerSummary,
+        mergeSeasons,
         get ready() { return !!(statsCache && nameMapCache); },
     };
 })();
