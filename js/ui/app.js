@@ -5,6 +5,8 @@ const App = (() => {
     let currentView = "dashboard";
     let tradeState = { partner: null, myOut: [], theirOut: [] };
     let statsTab = "scoring"; // 数据看板当前榜单
+    // NBA 真实数据视图的筛选/排序状态（持久化在模块内，切换视图不丢失）
+    let nbaStatsFilter = { q: "", team: "", sort: "pts", pos: "" };
 
     // ============ 初始化 ============
     function init(managerName, teamId) {
@@ -68,6 +70,10 @@ const App = (() => {
         updateStandings();
         renderAll();
         autoSave();
+        // 后台异步加载 NBA 真实球员历史数据（不阻塞 UI，加载完自动刷新当前球员详情）
+        NBAStats.ensureLoaded().then(ok => {
+            if (ok && currentView === 'roster') renderAll();
+        });
         toast(`欢迎，${managerName}！你已执教 ${teamName(teamId)}`, "success");
     }
 
@@ -86,6 +92,8 @@ const App = (() => {
         // standings 已在读档时置空，这里重算
         updateStandings();
         renderAll();
+        // 后台异步加载 NBA 真实球员历史数据
+        NBAStats.ensureLoaded();
         toast(`已读取存档：${teamName(state.manager.teamId)} ${state.year}-${state.year+1}`, "success");
     }
 
@@ -259,6 +267,7 @@ const App = (() => {
             stats: renderStats,
             draft: renderDraft,
             league: renderLeague,
+            nbastats: renderNbaStats,
         };
         main.innerHTML = (renderers[view] || renderDashboard)();
         bindViewEvents();
@@ -272,6 +281,7 @@ const App = (() => {
             { v: "freeagents", icon: "💰", name: "自由球员" },
             { v: "draft", icon: "🎓", name: "选秀" },
             { v: "league", icon: "🌐", name: "联盟" },
+            { v: "nbastats", icon: "🏀", name: "NBA数据" },
             { v: "dashboard", icon: "📊", name: "仪表盘" },
         ];
         const html = `<div class="modal-title">更多功能</div>
@@ -1762,6 +1772,28 @@ const App = (() => {
             statsTab = el.dataset.statstab;
             renderView("stats");
         }));
+        // NBA 真实数据视图：搜索/筛选/排序 + 行点击
+        const nbaQ = document.getElementById("nba-q");
+        if (nbaQ) {
+            let nbaTimer = null;
+            nbaQ.addEventListener("input", e => {
+                clearTimeout(nbaTimer);
+                nbaTimer = setTimeout(() => {
+                    nbaStatsFilter.q = e.target.value.trim();
+                    renderView("nbastats");
+                    // 重新渲染后聚焦回输入框并光标定位末尾
+                    const inp = document.getElementById("nba-q");
+                    if (inp) { inp.focus(); inp.value = nbaStatsFilter.q; const len = inp.value.length; inp.setSelectionRange(len, len); }
+                }, 250);
+            });
+        }
+        const nbaTeamSel = document.getElementById("nba-team");
+        if (nbaTeamSel) nbaTeamSel.addEventListener("change", e => { nbaStatsFilter.team = e.target.value; renderView("nbastats"); });
+        const nbaSortSel = document.getElementById("nba-sort");
+        if (nbaSortSel) nbaSortSel.addEventListener("change", e => { nbaStatsFilter.sort = e.target.value; renderView("nbastats"); });
+        document.querySelectorAll("[data-nbaid]").forEach(el => {
+            el.addEventListener("click", () => showNbaPlayerDetail(el.dataset.nbaid));
+        });
     }
 
     // ============ 球队详情弹窗（查看任意球队球员名单 + 赛季场均）============
@@ -1916,7 +1948,277 @@ const App = (() => {
             ${skillBars}
             ${statHtml}
             ${histHtml}
+            ${renderRealCareerHtml(p)}
             ${isMine ? `<div class="modal-actions"><button class="btn" onclick="App.releasePlayer('${pid}')">释放球员</button><button class="btn btn-primary" onclick="App.closeModal()">关闭</button></div>` : `<div class="modal-actions"><button class="btn btn-primary" onclick="App.closeModal()">关闭</button></div>`}
+        `);
+    }
+
+    // 渲染「真实 NBA 生涯数据」区块（基于 stats.nba.com 历史数据）
+    function renderRealCareerHtml(p) {
+        if (!NBAStats.ready) {
+            // 数据未加载完，提示并触发加载（下次打开球员详情时会显示）
+            NBAStats.ensureLoaded();
+            return `<div class="card-title mt-20">真实 NBA 生涯</div>
+                <div class="muted center" style="padding:14px;background:var(--bg-elevated);border-radius:8px;font-size:12px">⏳ 真实数据加载中，稍后重试</div>`;
+        }
+        const nbaId = NBAStats.nbaIdByZh(p.n);
+        if (nbaId == null) {
+            return `<div class="card-title mt-20">真实 NBA 生涯</div>
+                <div class="muted center" style="padding:14px;background:var(--bg-elevated);border-radius:8px;font-size:12px">该球员无真实 NBA 数据（虚构或新秀未收录）</div>`;
+        }
+        const data = NBAStats.statsByNbaId(nbaId);
+        if (!data || !data.seasons || data.seasons.length === 0) {
+            return `<div class="card-title mt-20">真实 NBA 生涯</div>
+                <div class="muted center" style="padding:14px;background:var(--bg-elevated);border-radius:8px;font-size:12px">无可用赛季数据</div>`;
+        }
+        // 生涯汇总
+        const career = NBAStats.careerSummary(data.seasons);
+        const careerHtml = career ? `
+            <div class="stat-grid" style="margin-bottom:10px">
+                <div class="stat-box"><div class="value" style="color:var(--gold);font-size:18px">${career.gp}</div><div class="label">总场次</div></div>
+                <div class="stat-box"><div class="value" style="font-size:16px">${career.seasons}</div><div class="label">赛季数</div></div>
+                <div class="stat-box"><div class="value" style="font-size:18px">${career.pts}</div><div class="label">生涯场均分</div></div>
+                <div class="stat-box"><div class="value" style="font-size:16px">${career.reb}</div><div class="label">场均板</div></div>
+                <div class="stat-box"><div class="value" style="font-size:16px">${career.ast}</div><div class="label">场均助</div></div>
+                <div class="stat-box"><div class="value" style="font-size:14px">${(career.fg_pct*100).toFixed(1)}%</div><div class="label">命中率</div></div>
+                <div class="stat-box"><div class="value" style="font-size:14px">${(career.fg3_pct*100).toFixed(1)}%</div><div class="label">三分率</div></div>
+                <div class="stat-box"><div class="value" style="font-size:14px">${(career.ft_pct*100).toFixed(1)}%</div><div class="label">罚球率</div></div>
+            </div>` : '';
+        // 历年赛季表（每行一年）
+        const rows = data.seasons.slice().reverse().map(s => {
+            const fgPct = s.fg_pct ? (s.fg_pct*100).toFixed(1)+'%' : '-';
+            const fg3Pct = s.fg3_pct ? (s.fg3_pct*100).toFixed(1)+'%' : '-';
+            const ftPct = s.ft_pct ? (s.ft_pct*100).toFixed(1)+'%' : '-';
+            return `<tr>
+                <td class="num">${s.year-1}-${String(s.year).slice(-2)}</td>
+                <td>${s.team||'-'}</td>
+                <td class="num">${s.gp||0}</td>
+                <td class="num">${s.min||0}</td>
+                <td class="num"><b>${s.pts||0}</b></td>
+                <td class="num">${s.reb||0}</td>
+                <td class="num">${s.ast||0}</td>
+                <td class="num">${s.stl||0}</td>
+                <td class="num">${s.blk||0}</td>
+                <td class="num">${fgPct}</td>
+                <td class="num">${fg3Pct}</td>
+                <td class="num">${ftPct}</td>
+            </tr>`;
+        }).join('');
+        // 球员基本信息
+        const draftStr = data.draft_year && data.draft_year !== 'Undrafted'
+            ? `${data.draft_year}年第${data.draft_round}轮 #${data.draft_number}`
+            : (data.draft_year || '未选秀');
+        const infoHtml = `
+            <div style="display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--text-dim);margin-bottom:10px">
+                <span>🎭 ${data.name}</span>
+                ${data.height ? `<span>📏 ${data.height}</span>` : ''}
+                ${data.weight ? `<span>⚖️ ${data.weight}lb</span>` : ''}
+                ${data.college && data.college !== 'None' ? `<span>🎓 ${data.college}</span>` : ''}
+                ${data.country ? `<span>🌐 ${data.country}</span>` : ''}
+                <span>📋 ${draftStr}</span>
+            </div>`;
+        return `
+            <div class="card-title mt-20">真实 NBA 生涯 <span class="muted" style="font-size:11px;text-transform:none">数据源: stats.nba.com</span></div>
+            ${infoHtml}
+            ${careerHtml}
+            <div class="table-wrap">
+                <table class="stats-table">
+                    <thead><tr>
+                        <th>赛季</th><th>队</th><th class="num">场</th><th class="num">分钟</th>
+                        <th class="num">分</th><th class="num">板</th><th class="num">助</th>
+                        <th class="num">断</th><th class="num">帽</th>
+                        <th class="num">FG%</th><th class="num">3P%</th><th class="num">FT%</th>
+                    </tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>`;
+    }
+
+    // ============ NBA 真实数据视图（浏览全联盟 582 名现役球员历史数据）============
+    function renderNbaStats() {
+        // 数据未就绪：触发加载并展示占位
+        if (!NBAStats.ready) {
+            NBAStats.ensureLoaded().then(ok => { if (ok) renderView("nbastats"); });
+            return `<h1 class="page-title">🏀 NBA 真实数据</h1>
+                <div class="card center" style="padding:30px"><div class="muted">⏳ 正在加载真实数据…</div></div>`;
+        }
+        const stats = NBAStats.getStats();
+        // 构建球员列表（含生涯汇总 + 当前球队 + 中文译名反查）
+        const zhMap = NBAStats.getNameMap();
+        // 反向：nbaId -> 中文译名（用于显示游戏内中文名）
+        const nbaIdToZh = {};
+        Object.entries(zhMap).forEach(([zh, id]) => { if (nbaIdToZh[id] == null) nbaIdToZh[id] = zh; });
+
+        const allTeams = state.teams;
+        // 收集数据中出现的所有球队缩写（用于筛选下拉）
+        const teamSet = new Set();
+        Object.values(stats).forEach(d => { (d.seasons || []).forEach(s => { if (s.team) teamSet.add(s.team); }); });
+        const teamOptions = allTeams
+            .filter(t => teamSet.has(t.id))
+            .sort((a, b) => a.abbr.localeCompare(b.abbr));
+
+        const list = Object.entries(stats).map(([id, d]) => {
+            const career = NBAStats.careerSummary(d.seasons || []);
+            if (!career) return null;
+            // 最近一支球队（按赛季年份倒序取第一个有 team 的）
+            const lastSeason = (d.seasons || []).slice().reverse().find(s => s.team);
+            return {
+                nbaId: id,
+                name: d.name,
+                zh: nbaIdToZh[id] || "",
+                team: lastSeason ? lastSeason.team : "",
+                gp: career.gp,
+                seasons: career.seasons,
+                pts: career.pts,
+                reb: career.reb,
+                ast: career.ast,
+                stl: career.stl,
+                blk: career.blk,
+                fg_pct: career.fg_pct,
+                fg3_pct: career.fg3_pct,
+                min: career.min,
+            };
+        }).filter(Boolean);
+
+        // 应用筛选
+        let filtered = list.filter(x => {
+            if (nbaStatsFilter.team && x.team !== nbaStatsFilter.team) return false;
+            if (nbaStatsFilter.q) {
+                const q = nbaStatsFilter.q.toLowerCase();
+                if (!x.name.toLowerCase().includes(q) && !(x.zh && x.zh.includes(nbaStatsFilter.q))) return false;
+            }
+            return true;
+        });
+        // 排序
+        const sortKey = nbaStatsFilter.sort;
+        filtered.sort((a, b) => (b[sortKey] || 0) - (a[sortKey] || 0) || b.name.localeCompare(a.name));
+
+        const sortOpts = ["pts", "reb", "ast", "stl", "blk", "gp", "seasons", "min"].map(k => {
+            const labels = { pts: "场均得分", reb: "场均篮板", ast: "场均助攻", stl: "场均抢断", blk: "场均盖帽", gp: "总出场", seasons: "赛季数", min: "场均分钟" };
+            return `<option value="${k}" ${sortKey===k?'selected':''}>${labels[k]}</option>`;
+        }).join("");
+
+        const teamOptsHtml = `<option value="">全部球队</option>` + teamOptions.map(t =>
+            `<option value="${t.id}" ${nbaStatsFilter.team===t.id?'selected':''}>${t.abbr} ${t.city}${t.name}</option>`).join("");
+
+        // 限制渲染行数（性能 + 体验：582 行全渲染也行，但搜索后通常更少）
+        const MAX_ROWS = 300;
+        const shown = filtered.slice(0, MAX_ROWS);
+        const rows = shown.map(x => {
+            const t = allTeams.find(tt => tt.id === x.team);
+            const teamCell = t ? `${t.abbr}` : (x.team || "-");
+            const zhTag = x.zh ? `<span class="muted" style="font-size:11px;margin-left:4px">${x.zh}</span>` : "";
+            return `<tr data-nbaid="${x.nbaId}" class="nba-row">
+                <td><div class="player-row"><div class="player-name">${x.name}</div>${zhTag}</div></td>
+                <td>${teamCell}</td>
+                <td class="num">${x.seasons}</td>
+                <td class="num">${x.gp}</td>
+                <td class="num"><b>${x.pts}</b></td>
+                <td class="num">${x.reb}</td>
+                <td class="num">${x.ast}</td>
+                <td class="num">${x.stl}</td>
+                <td class="num">${x.blk}</td>
+                <td class="num">${(x.fg_pct*100).toFixed(1)}%</td>
+                <td class="num">${(x.fg3_pct*100).toFixed(1)}%</td>
+            </tr>`;
+        }).join("");
+
+        const resultHint = filtered.length > MAX_ROWS
+            ? `<span class="muted" style="font-size:11px">（仅显示前 ${MAX_ROWS} 条，共 ${filtered.length} 条，请用搜索缩小范围）</span>`
+            : `<span class="muted" style="font-size:11px">共 ${filtered.length} 名球员</span>`;
+
+        return `
+        <h1 class="page-title">🏀 NBA 真实数据 <span class="muted" style="font-size:12px;font-weight:400">数据源: stats.nba.com (2009-2026)</span></h1>
+        <div class="card">
+            <div class="filter-bar" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center">
+                <input type="text" id="nba-q" class="text-input" placeholder="搜索球员（中英文）" value="${nbaStatsFilter.q}" style="flex:1;min-width:160px">
+                <select id="nba-team" class="text-input" style="min-width:150px">${teamOptsHtml}</select>
+                <select id="nba-sort" class="text-input" style="min-width:130px">${sortOpts}</select>
+            </div>
+            <div class="card-title" style="margin-top:6px">现役球员生涯场均 <span class="muted" style="font-size:11px;text-transform:none">点击球员查看完整历史数据</span> ${resultHint}</div>
+            <div class="table-wrap"><table class="stats-table"><thead><tr>
+                <th>球员</th><th>队</th><th class="num">赛季</th><th class="num">场</th>
+                <th class="num">分</th><th class="num">板</th><th class="num">助</th>
+                <th class="num">断</th><th class="num">帽</th>
+                <th class="num">FG%</th><th class="num">3P%</th>
+            </tr></thead><tbody>${rows || `<tr><td colspan="11" class="muted center">无匹配球员</td></tr>`}</tbody></table></div>
+        </div>`;
+    }
+
+    // NBA 球员详情弹窗（独立于游戏球员，展示任意 NBA 球员真实生涯数据）
+    function showNbaPlayerDetail(nbaId) {
+        const data = NBAStats.statsByNbaId(nbaId);
+        if (!data) { toast("未找到该球员的 NBA 数据", "error"); return; }
+        const seasons = data.seasons || [];
+        const career = NBAStats.careerSummary(seasons);
+        const zhMap = NBAStats.getNameMap();
+        const zhName = Object.entries(zhMap).find(([_, id]) => String(id) === String(nbaId))?.[0];
+
+        const draftStr = data.draft_year && data.draft_year !== 'Undrafted'
+            ? `${data.draft_year}年第${data.draft_round}轮 #${data.draft_number}`
+            : (data.draft_year || '未选秀');
+        const infoHtml = `
+            <div style="display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--text-dim);margin-bottom:10px">
+                <span>🎭 ${data.name}</span>
+                ${zhName ? `<span>🀄 ${zhName}</span>` : ''}
+                ${data.height ? `<span>📏 ${data.height}</span>` : ''}
+                ${data.weight ? `<span>⚖️ ${data.weight}lb</span>` : ''}
+                ${data.college && data.college !== 'None' ? `<span>🎓 ${data.college}</span>` : ''}
+                ${data.country ? `<span>🌐 ${data.country}</span>` : ''}
+                <span>📋 ${draftStr}</span>
+            </div>`;
+        const careerHtml = career ? `
+            <div class="stat-grid" style="margin-bottom:10px">
+                <div class="stat-box"><div class="value" style="color:var(--gold);font-size:18px">${career.gp}</div><div class="label">总场次</div></div>
+                <div class="stat-box"><div class="value" style="font-size:16px">${career.seasons}</div><div class="label">赛季数</div></div>
+                <div class="stat-box"><div class="value" style="font-size:18px">${career.pts}</div><div class="label">场均分</div></div>
+                <div class="stat-box"><div class="value" style="font-size:16px">${career.reb}</div><div class="label">场均板</div></div>
+                <div class="stat-box"><div class="value" style="font-size:16px">${career.ast}</div><div class="label">场均助</div></div>
+                <div class="stat-box"><div class="value" style="font-size:14px">${career.stl}</div><div class="label">场均断</div></div>
+                <div class="stat-box"><div class="value" style="font-size:14px">${career.blk}</div><div class="label">场均帽</div></div>
+                <div class="stat-box"><div class="value" style="font-size:14px">${(career.fg_pct*100).toFixed(1)}%</div><div class="label">命中率</div></div>
+                <div class="stat-box"><div class="value" style="font-size:14px">${(career.fg3_pct*100).toFixed(1)}%</div><div class="label">三分率</div></div>
+                <div class="stat-box"><div class="value" style="font-size:14px">${(career.ft_pct*100).toFixed(1)}%</div><div class="label">罚球率</div></div>
+            </div>` : '';
+        const rows = seasons.slice().reverse().map(s => {
+            const fgPct = s.fg_pct ? (s.fg_pct*100).toFixed(1)+'%' : '-';
+            const fg3Pct = s.fg3_pct ? (s.fg3_pct*100).toFixed(1)+'%' : '-';
+            const ftPct = s.ft_pct ? (s.ft_pct*100).toFixed(1)+'%' : '-';
+            return `<tr>
+                <td class="num">${s.year-1}-${String(s.year).slice(-2)}</td>
+                <td>${s.team||'-'}</td>
+                <td class="num">${s.gp||0}</td>
+                <td class="num">${s.min||0}</td>
+                <td class="num"><b>${s.pts||0}</b></td>
+                <td class="num">${s.reb||0}</td>
+                <td class="num">${s.ast||0}</td>
+                <td class="num">${s.stl||0}</td>
+                <td class="num">${s.blk||0}</td>
+                <td class="num">${fgPct}</td>
+                <td class="num">${fg3Pct}</td>
+                <td class="num">${ftPct}</td>
+            </tr>`;
+        }).join('');
+        showModal(`
+            <div class="modal-title">
+                <div style="font-size:18px;font-weight:800">${data.name} ${zhName?`<span class="muted" style="font-size:14px;font-weight:400">${zhName}</span>`:''}</div>
+                <div style="font-size:12px;color:var(--text-dim);font-weight:400;margin-top:2px">真实 NBA 生涯 · 数据源 stats.nba.com</div>
+            </div>
+            ${infoHtml}
+            ${careerHtml}
+            <div class="card-title">历年赛季数据</div>
+            <div class="table-wrap">
+                <table class="stats-table">
+                    <thead><tr>
+                        <th>赛季</th><th>队</th><th class="num">场</th><th class="num">分钟</th>
+                        <th class="num">分</th><th class="num">板</th><th class="num">助</th>
+                        <th class="num">断</th><th class="num">帽</th>
+                        <th class="num">FG%</th><th class="num">3P%</th><th class="num">FT%</th>
+                    </tr></thead>
+                    <tbody>${rows || `<tr><td colspan="12" class="muted center">无赛季数据</td></tr>`}</tbody>
+                </table>
+            </div>
+            <div class="modal-actions"><button class="btn btn-primary" onclick="App.closeModal()">关闭</button></div>
         `);
     }
 
@@ -1949,7 +2251,7 @@ const App = (() => {
 
     return {
         init, renderView, advance, fastAdvance, closeModal, releasePlayer, showMoreMenu,
-        loadState, showSaveManager, showTacticsModal, showAwardsHistory,
+        loadState, showSaveManager, showTacticsModal, showAwardsHistory, showNbaPlayerDetail,
         get state() { return state; },
     };
 })();
