@@ -7,6 +7,10 @@ const App = (() => {
     let statsTab = "scoring"; // 数据看板当前榜单
     // NBA 真实数据视图的筛选/排序状态（持久化在模块内，切换视图不丢失）
     let nbaStatsFilter = { q: "", team: "", sort: "pts", pos: "" };
+    // 快速模拟标志：fast-sim 期间不弹交易窗，结束后统一汇总
+    let isFastSimming = false;
+    // 快速模拟期间累积的重磅交易（结束后弹窗汇总）
+    let pendingBlockbusters = [];
 
     // ============ 初始化 ============
     function init(managerName, teamId) {
@@ -64,6 +68,7 @@ const App = (() => {
             // 玩家战术设置：pace 节奏 / defense 防守强度 / rotation 轮换深度
             tactics: { pace: 1, defense: 1, rotation: 1 },
             injuryLog: [], // 本季伤病记录（用于展示）
+            tradeLog: [], // 本季 AI 交易记录（用于展示）
             rosterVersion: 2027, // 名单版本号，与 main.js 中 CURRENT_ROSTER_VERSION 对齐
         };
         teams.forEach(t => state.statAccum[t.id] = {});
@@ -88,6 +93,7 @@ const App = (() => {
         if (!state.awardsHistory) state.awardsHistory = [];
         if (!state.playerHistory) state.playerHistory = {};
         if (!state.injuryLog) state.injuryLog = [];
+        if (!state.tradeLog) state.tradeLog = [];
         if (!state.rosterVersion) state.rosterVersion = 0;
         // standings 已在读档时置空，这里重算
         updateStandings();
@@ -151,6 +157,29 @@ const App = (() => {
         };
     }
     function clamp(v, mn, mx) { return Math.max(mn, Math.min(mx, v)); }
+
+    // 添加新秀前确保球队名单不超过 15 人：释放能力最低的球员（优先替补填充球员）
+    // 释放的球员从球队名单和全局 players 数组中一并移除
+    function makeRoomForRookie(teamId) {
+        const roster = state.teamsPlayers[teamId];
+        if (!roster) return;
+        while (roster.length >= 15) {
+            let toRelease = null;
+            const fillers = roster.filter(p => p.isFiller);
+            if (fillers.length > 0) {
+                // 优先释放能力最低的替补填充球员
+                fillers.sort((a, b) => a.o - b.o);
+                toRelease = fillers[0];
+            } else {
+                // 无填充球员时，释放能力最低的边缘球员
+                toRelease = [...roster].sort((a, b) => a.o - b.o)[0];
+            }
+            if (!toRelease) break;
+            const idx = roster.findIndex(p => p.id === toRelease.id);
+            if (idx >= 0) roster.splice(idx, 1);
+            state.players = state.players.filter(p => p.id !== toRelease.id);
+        }
+    }
 
     // ============ 顶部状态栏 ============
     function renderTopbar() {
@@ -268,6 +297,7 @@ const App = (() => {
             draft: renderDraft,
             league: renderLeague,
             nbastats: renderNbaStats,
+            tradelog: renderTradeLog,
         };
         main.innerHTML = (renderers[view] || renderDashboard)();
         bindViewEvents();
@@ -281,6 +311,7 @@ const App = (() => {
             { v: "freeagents", icon: "💰", name: "自由球员" },
             { v: "draft", icon: "🎓", name: "选秀" },
             { v: "league", icon: "🌐", name: "联盟" },
+            { v: "tradelog", icon: "🔄", name: "交易动态" },
             { v: "nbastats", icon: "🏀", name: "NBA数据" },
             { v: "dashboard", icon: "📊", name: "仪表盘" },
         ];
@@ -539,6 +570,7 @@ const App = (() => {
             <div class="card-title">最近 5 场</div>
             <div class="table-wrap"><table><thead><tr><th>对手</th><th class="num">比分</th><th>结果</th></tr></thead><tbody>${recentHtml}</tbody></table></div>
         </div>
+        ${renderTradeFeedCard(5)}
         <div class="card">
             <div class="card-title">阵容核心</div>
             <div class="table-wrap">${renderPlayerTable(myPlayers.slice().sort((a,b)=>b.o-a.o).slice(0,8), false)}</div>
@@ -553,6 +585,54 @@ const App = (() => {
         return `<div class="card">
             <div class="card-title">🚑 伤兵名单 <span class="muted" style="font-size:11px;text-transform:none">${injured.length}人缺阵</span></div>
             <div class="table-wrap"><table><thead><tr><th>球员</th><th class="num">状态</th><th class="num">预计缺阵</th></tr></thead><tbody>${rows}</tbody></table></div>
+        </div>`;
+    }
+
+    // 交易动态卡片（仪表盘/交易日志视图共用）
+    function renderTradeFeedCard(limit) {
+        const log = (state.tradeLog || []).slice().reverse().slice(0, limit);
+        if (log.length === 0) return "";
+        const rows = log.map(tr => {
+            const aSide = tr.outgoingA.map(p => `${p.n}(${p.o})`).join(", ");
+            const bSide = tr.outgoingB.map(p => `${p.n}(${p.o})`).join(", ");
+            const tag = tr.blockbuster ? '<span class="tag tag-rookie" style="margin-left:4px">重磅</span>' : '';
+            return `<tr>
+                <td>${teamLogo(tr.teamA,16)} ${teamAbbr(tr.teamA)}${tag}</td>
+                <td class="muted" style="font-size:12px">${aSide} ⇄ ${bSide}</td>
+                <td>${teamLogo(tr.teamB,16)} ${teamAbbr(tr.teamB)}</td>
+            </tr>`;
+        }).join("");
+        return `<div class="card">
+            <div class="card-title">🔄 联盟交易动态 <span class="muted" style="font-size:11px;text-transform:none">本季共 ${(state.tradeLog||[]).length} 笔</span></div>
+            <div class="table-wrap"><table><thead><tr><th>球队</th><th>交易内容</th><th>球队</th></tr></thead><tbody>${rows}</tbody></table></div>
+        </div>`;
+    }
+
+    // 交易日志完整视图
+    function renderTradeLog() {
+        const log = (state.tradeLog || []).slice().reverse();
+        if (log.length === 0) {
+            return `<h1 class="page-title">🔄 联盟交易动态</h1>
+            <div class="card"><div class="muted center" style="padding:24px">本赛季暂无 AI 球队间交易</div></div>`;
+        }
+        const rows = log.map(tr => {
+            const aSide = tr.outgoingA.map(p => `<span class="pos-${p.p}">${p.p}</span> ${p.n} <span class="muted">(${p.o},${p.a}岁,$${p.sal}M)</span>`).join("<br>");
+            const bSide = tr.outgoingB.map(p => `<span class="pos-${p.p}">${p.p}</span> ${p.n} <span class="muted">(${p.o},${p.a}岁,$${p.sal}M)</span>`).join("<br>");
+            const tag = tr.blockbuster ? '<span class="tag tag-rookie">重磅</span>' : '<span class="tag" style="background:var(--bg-elevated);color:var(--text-dim)">常规</span>';
+            return `<tr>
+                <td class="num muted" style="font-size:12px">第${tr.day+1}天</td>
+                <td>${teamLogo(tr.teamA,18)} ${teamAbbr(tr.teamA)}</td>
+                <td style="font-size:12px">${aSide}</td>
+                <td class="center muted">⇄</td>
+                <td style="font-size:12px">${bSide}</td>
+                <td>${teamLogo(tr.teamB,18)} ${teamAbbr(tr.teamB)}</td>
+                <td>${tag}</td>
+            </tr>`;
+        }).join("");
+        return `<h1 class="page-title">🔄 联盟交易动态</h1>
+        <div class="card">
+            <div class="card-title">本赛季交易记录 <span class="muted" style="font-size:11px;text-transform:none">共 ${log.length} 笔（含 ${log.filter(t=>t.blockbuster).length} 笔重磅交易）</span></div>
+            <div class="table-wrap"><table><thead><tr><th class="num">日期</th><th>球队</th><th>送出</th><th></th><th>获得</th><th>球队</th><th>类型</th></tr></thead><tbody>${rows}</tbody></table></div>
         </div>`;
     }
 
@@ -988,6 +1068,8 @@ const App = (() => {
             });
             // 每天推进：恢复所有受伤球员 1 天
             recoverInjuries();
+            // 每天触发 AI 球队间交易（约 2 笔尝试，重磅交易弹窗）
+            runDailyAiTrades();
             if (userGame) {
                 const res = simUserGame(userGame);
                 state.currentDay++;
@@ -1318,6 +1400,8 @@ const App = (() => {
         if (fastBtn) fastBtn.disabled = true;
         if (advBtn) advBtn.disabled = true;
         let lastPct = -1;
+        isFastSimming = true;
+        pendingBlockbusters = [];
         function tick() {
             const t0 = Date.now();
             // 每个时间片最多跑 50ms，避免阻塞 UI
@@ -1330,17 +1414,34 @@ const App = (() => {
             if (state.currentDay < state.schedule.length) {
                 setTimeout(tick, 0);
             } else {
+                isFastSimming = false;
                 // 完成：常规赛结束 → 关进度条 → 评选奖项（弹窗保留）→ 季后赛
                 const r = state.records[state.manager.teamId];
                 // 重新启用按钮（renderAll 会刷新标签，但显式重置 disabled 更稳妥）
                 if (fastBtn) fastBtn.disabled = false;
                 if (advBtn) advBtn.disabled = false;
                 closeModal(); // 先关掉进度条弹窗
-                presentSeasonAwards(); // 再开奖项弹窗（会被保留，玩家可查看）
-                startPlayoffs();
-                autoSave();
-                renderAll();
-                toast(`常规赛结束：${r.win}胜${r.loss}负，进入季后赛 🏆`, "gold");
+                // 若快速模拟期间有重磅交易，先弹窗汇总，再评奖项
+                if (pendingBlockbusters.length > 0) {
+                    const bb = pendingBlockbusters.slice();
+                    pendingBlockbusters = [];
+                    showTradeModal(bb);
+                    // 延后奖项弹窗，避免被交易弹窗覆盖
+                    setTimeout(() => {
+                        closeModal();
+                        presentSeasonAwards();
+                        startPlayoffs();
+                        autoSave();
+                        renderAll();
+                        toast(`常规赛结束：${r.win}胜${r.loss}负，进入季后赛 🏆`, "gold");
+                    }, 100);
+                } else {
+                    presentSeasonAwards(); // 再开奖项弹窗（会被保留，玩家可查看）
+                    startPlayoffs();
+                    autoSave();
+                    renderAll();
+                    toast(`常规赛结束：${r.win}胜${r.loss}负，进入季后赛 🏆`, "gold");
+                }
             }
         }
         // 首个时间片同步执行：剩余天数较少时可一次跑完，避免无谓的异步等待
@@ -1386,6 +1487,7 @@ const App = (() => {
                 const roster = state.teamsPlayers[owner] || [];
                 const pick = DraftEngine.aiPick(available, roster);
                 if (pick) {
+                    if (state.teamsPlayers[owner]) makeRoomForRookie(owner);
                     DraftEngine.assignRookieToTeam(pick, owner, state.draftPick + 1);
                     if (state.teamsPlayers[owner]) state.teamsPlayers[owner].push(pick);
                     state.players.push(pick);
@@ -1443,6 +1545,7 @@ const App = (() => {
             const roster = state.teamsPlayers[owner];
             const pick = DraftEngine.aiPick(available, roster);
             if (pick) {
+                makeRoomForRookie(owner);
                 DraftEngine.assignRookieToTeam(pick, owner, state.draftPick + 1);
                 roster.push(pick);
                 state.players.push(pick);
@@ -1458,6 +1561,7 @@ const App = (() => {
         const rookie = state.rookieClass.find(r => r.id === rookieId && r.t === null);
         if (!rookie) return;
         if (state.draftOrder[state.draftPick] !== myId) { toast("这不是你的顺位", "error"); return; }
+        makeRoomForRookie(myId);
         DraftEngine.assignRookieToTeam(rookie, myId, state.draftPick + 1);
         state.teamsPlayers[myId].push(rookie);
         state.players.push(rookie);
@@ -1494,6 +1598,7 @@ const App = (() => {
             const roster = state.teamsPlayers[owner];
             const pick = DraftEngine.aiPick(available, roster);
             if (pick) {
+                makeRoomForRookie(owner);
                 DraftEngine.assignRookieToTeam(pick, owner, state.draftPick + 1);
                 roster.push(pick);
                 state.players.push(pick);
@@ -1523,7 +1628,40 @@ const App = (() => {
             });
             state.players = state.players.filter(p => !retiredIds.has(p.id));
         }
-        // 4. 退役清理后，球队名单可能不足 14 人，补充替补填充球员
+        // 4. 退役清理后，先修剪超额名单至 15 人，再补充替补填充球员至 14 人
+        //    （历史存档可能存在名单 > 15 的脏数据，这里作为安全网统一收敛）
+        const offseasonReleasedIds = new Set();
+        state.teams.forEach(t => {
+            const roster = state.teamsPlayers[t.id];
+            while (roster.length > 15) {
+                let toRelease = null;
+                const fillers = roster.filter(p => p.isFiller);
+                if (fillers.length > 0) {
+                    fillers.sort((a, b) => a.o - b.o);
+                    toRelease = fillers[0];
+                } else {
+                    toRelease = [...roster].sort((a, b) => a.o - b.o)[0];
+                }
+                if (!toRelease) break;
+                const idx = roster.findIndex(p => p.id === toRelease.id);
+                if (idx >= 0) roster.splice(idx, 1);
+                offseasonReleasedIds.add(toRelease.id);
+            }
+        });
+        if (offseasonReleasedIds.size > 0) {
+            state.players = state.players.filter(p => !offseasonReleasedIds.has(p.id));
+        }
+        // 4.5 强制执行硬帽：超帽球队释放最低性价比球员直至合规
+        //     修复硬帽失效 bug：原 validateSalary 只在交易瞬间检查，但 offseasonProgression 中
+        //     adjustSalaryByAge 会重算薪资（老将跨年折扣恢复），可能导致已合规球队再次超帽
+        const hardCapReleased = SeasonEngine.enforceHardCap(state);
+        if (hardCapReleased.length > 0) {
+            const notable = hardCapReleased.filter(p => !p.isFiller && p.o >= 75).slice(0, 3);
+            if (notable.length) {
+                const names = notable.map(p => `${p.n}($${p.sal}M)`).join('、');
+                setTimeout(() => toast(`💰 薪资瘦身: ${names} 等共 ${hardCapReleased.length} 人因硬帽被释放`, ""), 600);
+            }
+        }
         state.teams.forEach(t => {
             while (state.teamsPlayers[t.id].length < 14) {
                 const fp = generateBenchPlayer(t.id, Date.now() % 1000 + state.teamsPlayers[t.id].length);
@@ -1534,11 +1672,14 @@ const App = (() => {
         // 5. 清空伤病（休赛期全部康复）
         state.players.forEach(p => p.injured = 0);
         state.injuryLog = [];
+        state.tradeLog = [];
         // 6. 重建统计
         state.teams.forEach(t => {
             state.records[t.id] = { win:0, loss:0, streak:0, ptsFor:0, ptsAgt:0 };
             state.statAccum[t.id] = {};
         });
+        // 清除球员的赛季交易冷却标记（新赛季开始，所有球员可再次被交易）
+        TradeEngine.resetTradeFlags(state);
         state.userGameLog = [];
         state.schedule = SeasonEngine.generateSchedule(state.teams);
         state.currentDay = 0;
@@ -1566,22 +1707,65 @@ const App = (() => {
     }
 
     // 记录球员职业生涯历史（每个赛季结束后调用）
+    // 关键修复:
+    //  1. 跳过刚选中的新秀（draftYear === state.year），避免写入选秀前一年的 phantom 零数据行
+    //  2. 遍历所有球队的 statAccum 查找该球员数据，支持交易后按球队分别记录
+    //  3. 扩展字段：min/stl/blk/tov/命中率等，完整展示生涯数据
+    //  4. 新秀首赛季即使 gp=0（未进轮换）也记录一条零数据行，保证生涯时间线连续
     function recordPlayerHistory() {
         // 注意：startDraft 已把 state.year +1（进入新赛季），所以刚结束的赛季是 state.year - 1
         const prevYear = state.year - 1;
         state.players.forEach(p => {
+            // 跳过刚选中的新秀（还没打任何比赛，避免 phantom 零数据行）
+            if (p.draftYear === state.year) return;
             if (!state.playerHistory[p.id]) state.playerHistory[p.id] = [];
-            const acc = state.statAccum[p.t] && state.statAccum[p.t][p.id];
-            state.playerHistory[p.id].push({
-                year: prevYear,
-                ovr: p.o,
-                teamId: p.t,
-                age: p.a,
-                gp: acc ? acc.gp : 0,
-                pts: acc ? +(acc.pts / Math.max(1, acc.gp)).toFixed(1) : 0,
-                reb: acc ? +(acc.reb / Math.max(1, acc.gp)).toFixed(1) : 0,
-                ast: acc ? +(acc.ast / Math.max(1, acc.gp)).toFixed(1) : 0,
+            let hasRecord = false;
+            // 遍历所有球队查找该球员的累积数据（支持赛季中交易：可能多队都有数据）
+            state.teams.forEach(t => {
+                const acc = state.statAccum[t.id] && state.statAccum[t.id][p.id];
+                if (!acc || acc.gp === 0) return; // 该队无数据则跳过
+                hasRecord = true;
+                const gp = acc.gp;
+                const div = (v) => +(v / Math.max(1, gp)).toFixed(1);
+                state.playerHistory[p.id].push({
+                    year: prevYear,
+                    ovr: p.o,
+                    teamId: t.id,
+                    age: p.a,
+                    gp: gp,
+                    min: div(acc.min),
+                    pts: div(acc.pts),
+                    reb: div(acc.reb),
+                    ast: div(acc.ast),
+                    stl: div(acc.stl),
+                    blk: div(acc.blk),
+                    tov: div(acc.tov),
+                    pf: div(acc.pf),
+                    fgm: div(acc.fgm),
+                    fga: div(acc.fga),
+                    tpm: div(acc.tpm),
+                    tpa: div(acc.tpa),
+                    ftm: div(acc.ftm),
+                    fta: div(acc.fta),
+                    oreb: div(acc.oreb),
+                    fg_pct: acc.fga > 0 ? +(acc.fgm / acc.fga).toFixed(3) : 0,
+                    fg3_pct: acc.tpa > 0 ? +(acc.tpm / acc.tpa).toFixed(3) : 0,
+                    ft_pct: acc.fta > 0 ? +(acc.ftm / acc.fta).toFixed(3) : 0,
+                });
             });
+            // 新秀首赛季未进轮换（gp=0）：记录一条零数据行保证生涯连续性
+            // 避免新秀生涯数据"黑洞"（首年完全缺失）
+            if (!hasRecord && p.draftYear === prevYear) {
+                state.playerHistory[p.id].push({
+                    year: prevYear,
+                    ovr: p.o,
+                    teamId: p.t,
+                    age: p.a,
+                    gp: 0, min: 0, pts: 0, reb: 0, ast: 0, stl: 0, blk: 0, tov: 0, pf: 0,
+                    fgm: 0, fga: 0, tpm: 0, tpa: 0, ftm: 0, fta: 0, oreb: 0,
+                    fg_pct: 0, fg3_pct: 0, ft_pct: 0,
+                });
+            }
         });
     }
 
@@ -1723,6 +1907,57 @@ const App = (() => {
         `);
     }
 
+    // ============ AI 自动交易（每日触发）============
+    // 每个比赛日尝试 1 笔 AI 交易，赛季约 50-60 笔（接近真实 NBA 频率）
+    function runDailyAiTrades() {
+        const executed = TradeEngine.runAiTrades(state, 1);
+        if (executed.length === 0) return;
+        const blockbusters = [];
+        executed.forEach(tr => {
+            // 记录交易快照（球员可能随后再被交易，故存名称/ovr 而非引用）
+            const snapshot = {
+                day: state.currentDay,
+                year: state.year,
+                teamA: tr.teamA,
+                teamB: tr.teamB,
+                outgoingA: tr.outgoingA.map(p => ({ n: p.n, o: p.o, p: p.p, a: p.a, sal: p.sal })),
+                outgoingB: tr.outgoingB.map(p => ({ n: p.n, o: p.o, p: p.p, a: p.a, sal: p.sal })),
+                blockbuster: tr.blockbuster,
+            };
+            state.tradeLog.push(snapshot);
+            if (tr.blockbuster) blockbusters.push(snapshot);
+        });
+        // 重磅交易通知
+        if (blockbusters.length > 0) {
+            if (isFastSimming) {
+                pendingBlockbusters.push(...blockbusters);
+            } else {
+                showTradeModal(blockbusters);
+            }
+        }
+    }
+
+    // 重磅交易弹窗
+    function showTradeModal(trades) {
+        const rows = trades.map(tr => {
+            const aSide = tr.outgoingA.map(p => `${p.n}(${p.o})`).join(", ");
+            const bSide = tr.outgoingB.map(p => `${p.n}(${p.o})`).join(", ");
+            return `<tr>
+                <td>${teamLogo(tr.teamA,20)} ${teamAbbr(tr.teamA)}</td>
+                <td>${aSide}</td>
+                <td style="text-align:center">⇄</td>
+                <td>${teamLogo(tr.teamB,20)} ${teamAbbr(tr.teamB)}</td>
+                <td>${bSide}</td>
+            </tr>`;
+        }).join("");
+        showModal(`
+            <div class="modal-title">💥 重磅交易达成！</div>
+            <div class="muted">联盟震动 — 以下重磅交易已正式完成</div>
+            <table class="mt-20" style="width:100%"><thead><tr><th>球队</th><th>送出</th><th></th><th>球队</th><th>获得</th></tr></thead><tbody>${rows}</tbody></table>
+            <div class="modal-actions"><button class="btn btn-primary" onclick="App.closeModal()">知道了</button></div>
+        `);
+    }
+
     // ============ 交易执行 ============
     function proposeTrade() {
         const myId = state.manager.teamId;
@@ -1736,16 +1971,25 @@ const App = (() => {
         const theirCheck = TradeEngine.validateSalary(partnerPlayers, tradeState.theirOut, tradeState.myOut);
         if (!myCheck.valid) { toast("我方薪资不合规: " + myCheck.reason, "error"); return; }
         if (!theirCheck.valid) { toast("对方薪资不合规: " + theirCheck.reason, "error"); return; }
-        // AI 评估
+        // AI 评估（与 AI-vs-AI 交易使用同一套评估逻辑，玩家方阈值略宽: score >= 0 即可接受）
         const record = state.records[partner];
         const winRate = record.win + record.loss > 0 ? record.win/(record.win+record.loss) : 0.5;
         const evalRes = TradeEngine.evaluateTradeForTeam(partnerPlayers, tradeState.theirOut, tradeState.myOut, { record: { winRate } });
-        if (evalRes.score < -3) {
+        if (evalRes.score < 0) {
             toast(`${teamAbbr(partner)} 拒绝了交易: ${evalRes.reason}`, "error");
             return;
         }
-        // 执行
-        TradeEngine.executeTradeWithIds(myPlayers, partnerPlayers, tradeState.myOut.slice(), tradeState.theirOut.slice(), myId, partner);
+        // 执行（传入 state.year 用于跨季冷却标记）
+        TradeEngine.executeTradeWithIds(myPlayers, partnerPlayers, tradeState.myOut.slice(), tradeState.theirOut.slice(), myId, partner, state.year);
+        // 记入交易日志
+        const snapshot = {
+            day: state.currentDay, year: state.year, teamA: myId, teamB: partner,
+            outgoingA: tradeState.myOut.map(p => ({ n: p.n, o: p.o, p: p.p, a: p.a, sal: p.sal })),
+            outgoingB: tradeState.theirOut.map(p => ({ n: p.n, o: p.o, p: p.p, a: p.a, sal: p.sal })),
+            blockbuster: [...tradeState.myOut, ...tradeState.theirOut].some(p => p.o >= 85),
+            isPlayer: true,
+        };
+        state.tradeLog.push(snapshot);
         toast(`交易完成! 获得 ${tradeState.theirOut.map(p=>p.n).join(", ")}`, "success");
         tradeState = { partner: null, myOut: [], theirOut: [] };
         renderAll();
@@ -1914,8 +2158,6 @@ const App = (() => {
         if (!p) return;
         const myId = state.manager.teamId;
         const isMine = p.t === myId;
-        const acc = state.statAccum[p.t] && state.statAccum[p.t][pid];
-        const s = acc && acc.gp > 0 ? acc : null;
         const skills = [["内线",p.ins],["投篮",p.sh],["传球",p.pa],["篮板",p.re],["防守",p.de],["运动",p.at],["球商",p.iq]];
         const skillBars = skills.map(([k,v]) => `<div class="skill-bar-row"><div class="skill-bar-label"><span>${k}</span><span><b>${v}</b></span></div><div class="skill-bar-track"><div class="skill-bar-fill" style="width:${v}%"></div></div></div>`).join("");
         const teamStr = p.t ? teamName(p.t) : '自由球员';
@@ -1965,6 +2207,7 @@ const App = (() => {
 
         // ===== 合并生涯数据：真实NBA历史 + 游戏内赛季 =====
         // 1. 收集游戏内赛季数据：playerHistory（历史赛季）+ statAccum（当前赛季）
+        //    支持交易后按球队分别显示：同一赛季可能有多条记录（每队一条）
         const gameSeasons = [];
         const hist = (state.playerHistory || {})[pid] || [];
         hist.forEach(h => {
@@ -1974,24 +2217,54 @@ const App = (() => {
                 ovr: h.ovr,
                 teamId: h.teamId,
                 gp: h.gp,
+                min: h.min || 0,
                 pts: h.pts,
                 reb: h.reb,
                 ast: h.ast,
+                stl: h.stl || 0,
+                blk: h.blk || 0,
+                tov: h.tov || 0,
+                fgm: h.fgm || 0,
+                fga: h.fga || 0,
+                tpm: h.tpm || 0,
+                tpa: h.tpa || 0,
+                ftm: h.ftm || 0,
+                fta: h.fta || 0,
+                fg_pct: h.fg_pct || 0,
+                fg3_pct: h.fg3_pct || 0,
+                ft_pct: h.ft_pct || 0,
             });
         });
-        // 当前赛季数据追加（如果已开打）
-        if (s) {
+        // 当前赛季数据追加：遍历所有球队查找该球员数据（支持赛季中交易，分别记录）
+        state.teams.forEach(t => {
+            const cur = state.statAccum[t.id] && state.statAccum[t.id][pid];
+            if (!cur || cur.gp === 0) return;
+            const gp = cur.gp;
+            const div = (v) => +(v / Math.max(1, gp)).toFixed(1);
             gameSeasons.push({
                 year: state.year,
                 age: p.a,
                 ovr: p.o,
-                teamId: p.t,
-                gp: s.gp,
-                pts: +(s.pts / s.gp).toFixed(1),
-                reb: +(s.reb / s.gp).toFixed(1),
-                ast: +(s.ast / s.gp).toFixed(1),
+                teamId: t.id,
+                gp: gp,
+                min: div(cur.min),
+                pts: div(cur.pts),
+                reb: div(cur.reb),
+                ast: div(cur.ast),
+                stl: div(cur.stl),
+                blk: div(cur.blk),
+                tov: div(cur.tov),
+                fgm: div(cur.fgm),
+                fga: div(cur.fga),
+                tpm: div(cur.tpm),
+                tpa: div(cur.tpa),
+                ftm: div(cur.ftm),
+                fta: div(cur.fta),
+                fg_pct: cur.fga > 0 ? +(cur.fgm / cur.fga).toFixed(3) : 0,
+                fg3_pct: cur.tpa > 0 ? +(cur.tpm / cur.tpa).toFixed(3) : 0,
+                ft_pct: cur.fta > 0 ? +(cur.ftm / cur.fta).toFixed(3) : 0,
             });
-        }
+        });
         // 2. 渲染统一的生涯数据区块
         const careerHtml = renderMergedCareerHtml(p, gameSeasons);
 
@@ -2031,10 +2304,14 @@ const App = (() => {
         const realData = nbaId != null ? NBAStats.statsByNbaId(nbaId) : null;
 
         // 合并赛季数据
+        // NBAStats 尚未加载完时回退到本地数据：tpm/tpa → fg3m/fg3a 映射，其余字段从 ...h 继承
         const merged = NBAStats.ready ? NBAStats.mergeSeasons(nbaId, gameSeasons) : gameSeasons.map(h => ({
-            ...h, team: h.teamId ? null : '-', _teamId: h.teamId, min: 0, stl: 0, blk: 0, tov: 0,
-            fgm: 0, fga: 0, fg3m: 0, fg3a: 0, ftm: 0, fta: 0,
-            fg_pct: 0, fg3_pct: 0, ft_pct: 0, source: 'game'
+            ...h,
+            team: h.teamId ? null : '-',
+            _teamId: h.teamId,
+            fg3m: h.tpm || 0,   // 三分命中（游戏内字段为 tpm）
+            fg3a: h.tpa || 0,   // 三分出手（游戏内字段为 tpa）
+            source: 'game',
         }));
 
         if (merged.length === 0) {

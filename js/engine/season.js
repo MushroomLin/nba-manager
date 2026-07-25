@@ -182,21 +182,45 @@ const SeasonEngine = (() => {
             let delta = 0;
             if (p.a <= 23) {
                 // 年轻球员成长（朝潜力靠近）
+                // 成长系数：高潜力新秀(pot-o>=10)用 0.50 加速成长补充超巨池，其余用 0.38
+                // 修复：超巨数量长期低于目标下限（8-20），新秀成长速率跟不上超巨退役速率
+                // 取消 max(1, ...) 强制最小 +1：让已接近 pot 的球员自然停止成长
                 const target = p.pot || p.o + 3;
-                const grow = Math.max(1, Math.round((target - p.o) * 0.35 + randInt(-1, 2)));
-                delta = grow;
+                // 修复：高潜新秀成长率 0.50→0.58，弥补 randInt 零均值化后超巨培养过慢
+                // （8 季超巨 <5，低于 5-15 目标区间）。0.58 让 pot=92,o=78 新秀单季 +6-8，3 季达 90+
+                const growthRate = (p.pot && p.pot - p.o >= 10) ? 0.58 : 0.38;
+                // 修复：randInt(-1, 2) 期望 +0.5 导致联盟 avgOvr 持续膨胀（75→78）
+                // 改为 randInt(-1, 1) 零均值，让成长更稳定
+                const grow = Math.round((target - p.o) * growthRate + randInt(-1, 1));
+                delta = Math.max(0, grow); // 至少不退步（年轻球员保护）
             } else if (p.a <= 27) {
                 // 巅峰期微涨
-                delta = randInt(-1, 2);
+                // 修复：randInt(-1, 2) 期望 +0.5 导致巅峰期球员持续上涨（实测 +0.5/季）
+                // 改为 randInt(-1, 1) 零均值，巅峰期应基本持平
+                delta = randInt(-1, 1);
             } else if (p.a <= 31) {
-                delta = randInt(-2, 1);
+                // 巅峰末期开始衰退（期望 -1）
+                delta = randInt(-3, 1);
             } else if (p.a <= 34) {
-                delta = randInt(-3, 0);
+                // 老将加速衰退
+                // 修复 v2：能力膨胀仍存在（avgOvr 75.35→78.81），进一步加快老将衰退
+                // 期望从 -2 提到 -2.5，让 32+ 球员更快退出超巨行列
+                delta = randInt(-5, 0);
             } else {
-                delta = randInt(-5, -1);
+                // 高龄快速衰退
+                // 修复 v2：期望从 -3 提到 -3.5，加速超巨淡出
+                delta = randInt(-7, 0);
             }
+            // 超巨保护：ovr≥90 的球员单季衰退不超过 -6，延长巅峰期但允许自然衰退
+            // 修复 v2：原 -5 保护仍让 ovr90 后期反弹至 24-29，放宽至 -6 加快超巨淡出
+            if (p.o >= 90 && delta < -6) delta = -6;
             // 新秀额外成长（仅对刚结束的新秀赛季生效，之后 isRookie 会被清掉）
-            if (p.isRookie && p.a <= 23) delta += randInt(1, 3);
+            // 修复：randInt(1, 3) 期望 +2 叠加成长率导致 MIP ovrΔ 普遍 10-17（期望 3-8）
+            // 降至 randInt(0, 2) 期望 +1，配合下方单季成长上限 8
+            if (p.isRookie && p.a <= 23) delta += randInt(0, 2);
+            // 修复：单季成长硬上限，避免高潜新秀单季 +10 以上跳变（MIP ovrΔ 离谱根因）
+            // 真实 NBA 单季最大进步约 +8-9（如恩比德新秀年），上限设 9 平衡超巨培养与防跳变
+            if (delta > 9) delta = 9;
             p.o = Math.max(40, Math.min(99, p.o + delta));
             // 各项能力同步微调
             const skills = ["ins","sh","pa","re","de","at","iq"];
@@ -226,17 +250,36 @@ const SeasonEngine = (() => {
                 return;
             }
             // 真实球员：基于年龄和能力的退役概率
+            // 球星保护：高 ovr 球员退役概率大幅降低，延长生涯（参考 LeBron/Curry/Durant 37+ 仍在阵）
+            // 修复：能力膨胀根因之一，提高退役概率让超巨更快淡出
             let retireProb = 0;
-            if (p.a >= 40) retireProb = 0.85;
-            else if (p.a >= 38) retireProb = 0.55;
-            else if (p.a >= 36) retireProb = 0.30;
+            if (p.a >= 41) retireProb = 0.80;
+            else if (p.a >= 40) retireProb = 0.55;
+            else if (p.a >= 38) retireProb = 0.35;
+            else if (p.a >= 36) retireProb = 0.20;
+            // 修复：中后期退役人数过低（S8=0, S13/15/17=1），低于 20-30 目标区间
+            // 提高 33-35 岁段退役概率，让老将更稳步退出，避免"退役真空期"
             else if (p.a >= 34) retireProb = 0.12;
-            else if (p.a >= 32) retireProb = 0.04;
-            // 能力低于阈值的退役概率增加（打不动了）
-            if (p.o < 68) retireProb += 0.15;
-            if (p.o < 62) retireProb += 0.30;
+            else if (p.a >= 33) retireProb = 0.06;
+            else if (p.a >= 32) retireProb = 0.03;
+            // 球星保护：高能力球员退役概率折扣
+            // 修复：原 0.45 折扣过强（ovr≥90 长期 14-28 个），调至 0.60 让超巨更早退役
+            if (p.o >= 90)      retireProb *= 0.60;
+            else if (p.o >= 86) retireProb *= 0.65;  // 一线巨星
+            else if (p.o >= 83) retireProb *= 0.75;  // 全明星
+            else if (p.o >= 80) retireProb *= 0.85;  // 优质首发
+            // 修复：超巨硬性年龄下限——ovr≥90 且年龄<36 不得退役（参考 LeBron/Curry/Durant 37+ 仍在阵）
+            // 原 37 岁下限保护过强，36 岁 ovr=90 球员退役概率仅 6.3%，造成超巨堆积
+            // 调整为 36 岁：让 36 岁超巨开始有退役概率（10.8%），37 岁以上正常退役
+            if (p.o >= 90 && p.a < 36) retireProb = 0;
+            // 修复：低龄球员豁免能力衰退退役——原 p.o<68 / p.o<62 加概率未设年龄下限，
+            // 导致 28-31 岁 ovr<62 球员 retireProb 达 0.37，20 季出现 4 例 <32 岁退役（真实 NBA 不存在）
+            // 真实 NBA 中低能力球员 30 岁前通常被裁/转海外，不算"退役"；此处仅对 ≥32 岁球员施加能力退役概率
+            // 修复：原 +0.25 过高导致 S1 老将集中退役（56-62人），降至 +0.18
+            if (p.a >= 32 && p.o < 68) retireProb += 0.12;
+            if (p.a >= 32 && p.o < 62) retireProb += 0.18;
             // 受过重伤（赛季报销）的老将更易退役
-            if (p.injured > 60 && p.a > 30) retireProb += 0.15;
+            if (p.injured > 60 && p.a > 30) retireProb += 0.10;
 
             if (Math.random() < retireProb) {
                 retired.push(p);
@@ -282,6 +325,86 @@ const SeasonEngine = (() => {
         if (p.a >= 34) return base * 0.8;
         if (p.a >= 32) return base * 0.9;
         return base;
+    }
+
+    // 强制执行硬帽（第二土豪线）：超帽球队释放最低性价比球员直至合规
+    // 应在 offseasonProgression 之后、选秀之前调用
+    // 释放策略：按 "薪资 / 球员价值" 降序释放（即最不划算的球员先被裁）
+    // 优先释放非核心(ovr<85)；若无候选人则降级释放 ovr≥85 但非超巨核心(ovr<92)的球员
+    // 名单可降至 12 人（休赛期选秀/filler 会补足，原 13 人无法处理多超巨球队）
+    // 返回被释放的球员数组（用于日志/动画展示）
+    function enforceHardCap(state) {
+        const cap = window.SALARY_CAP;
+        if (!cap) return [];
+        const hardCap = cap * 1.30;
+        const released = [];
+        if (!state.teamsPlayers) return released;
+        state.teams.forEach(t => {
+            const roster = state.teamsPlayers[t.id];
+            if (!roster) return;
+            let teamSal = roster.reduce((s, p) => s + (p.sal || 0), 0);
+            // 修复：原限制 roster.length > 8 导致多超巨球队卡死在超帽状态
+            // 当 4-6 名顶薪超巨 + 2-3 角色球员 = 8 人时合计薪资仍 >182M，循环退出跳过级联释放
+            // 允许降至 5 人：极端情况下可裁到 5 名核心，filler/选秀会补足至 14 人
+            // filler 薪资 1.5-4.5M，9 个 filler 合计 <40M，不会重新超帽
+            for (let guard = 0; teamSal > hardCap && guard < 30 && roster.length > 5; guard++) {
+                // 候选释放名单：非新秀，按"薪资性价比"降序（性价比最差先裁）
+                // 第一优先级：ovr<85 的非核心球员
+                let candidates = roster
+                    .filter(p => !p.isRookie && p.o < 85)
+                    .map(p => ({
+                        player: p,
+                        ratio: (p.sal || 0) / ((TradeEngine.playerValue ? TradeEngine.playerValue(p) : p.o) + 1),
+                    }))
+                    .sort((a, b) => b.ratio - a.ratio);
+                // 若无 ovr<85 候选人，降级释放 ovr 85-91 的高薪低性价比球员（保护 ovr≥92 超巨）
+                if (candidates.length === 0) {
+                    candidates = roster
+                        .filter(p => !p.isRookie && p.o >= 85 && p.o < 92)
+                        .map(p => ({
+                            player: p,
+                            ratio: (p.sal || 0) / ((TradeEngine.playerValue ? TradeEngine.playerValue(p) : p.o) + 1),
+                        }))
+                        .sort((a, b) => b.ratio - a.ratio);
+                }
+                // 极端情况：若仍无候选人，允许释放 ovr 92-95 的次顶薪超巨（保护 ovr≥96）
+                if (candidates.length === 0) {
+                    candidates = roster
+                        .filter(p => !p.isRookie && p.o >= 92 && p.o < 96)
+                        .map(p => ({
+                            player: p,
+                            ratio: (p.sal || 0) / ((TradeEngine.playerValue ? TradeEngine.playerValue(p) : p.o) + 1),
+                        }))
+                        .sort((a, b) => b.ratio - a.ratio);
+                }
+                // 终极兜底：若仍超帽，允许释放 ovr≥96 的超级顶薪球员
+                // 修复：原逻辑无此层级，导致 S20 BOS 243.5M 仍超帽（6 名 ovr 91-99 球员合计 220M+）
+                if (candidates.length === 0) {
+                    candidates = roster
+                        .filter(p => !p.isRookie && p.o >= 96)
+                        .map(p => ({
+                            player: p,
+                            ratio: (p.sal || 0) / ((TradeEngine.playerValue ? TradeEngine.playerValue(p) : p.o) + 1),
+                        }))
+                        .sort((a, b) => b.ratio - a.ratio);
+                }
+                if (candidates.length === 0) break; // 没有可裁的，放弃（极端情况）
+                const toRelease = candidates[0].player;
+                const idx = roster.findIndex(p => p.id === toRelease.id);
+                if (idx < 0) break;
+                roster.splice(idx, 1);
+                teamSal -= (toRelease.sal || 0);
+                toRelease.t = null;
+                toRelease.isFreeAgent = true;
+                released.push(toRelease);
+            }
+        });
+        // 同步 state.players：移除被释放的球员
+        if (released.length > 0 && state.players) {
+            const releasedIds = new Set(released.map(p => p.id));
+            state.players = state.players.filter(p => !releasedIds.has(p.id));
+        }
+        return released;
     }
 
     // 生成自由球员（休赛期补充市场）
@@ -377,36 +500,91 @@ const SeasonEngine = (() => {
         const candidates = [];
         // 用于进步最快球员: 记录本赛季 ovr 与上赛季 ovr 的差值
         const playerHistory = state.playerHistory || {};
+
+        // 先按 pid 聚合所有球队的 statAccum，避免赛季中交易的球员被拆成多个候选
+        // 交易球员 P 在 A 队和 B 队各有 statAccum 记录，需合并为一条（总 gp/总数 → per-game）
+        const playerAgg = {}; // pid -> { p, s(合并后统计), gp, teamId(当前所属) }
         Object.entries(state.statAccum).forEach(([teamId, acc]) => {
-            const teamRec = state.records[teamId] || { win: 0, loss: 0 };
-            const gp = teamRec.win + teamRec.loss;
-            const winRate = gp > 0 ? teamRec.win / gp : 0;
             Object.entries(acc).forEach(([pid, s]) => {
-                if (s.gp < 20) return; // 至少打 20 场才参评
                 const p = state.players.find(x => x.id === pid);
                 if (!p) return;
-                const ppg = s.pts / s.gp, rpg = s.reb / s.gp, apg = s.ast / s.gp;
-                const spg = s.stl / s.gp, bpg = s.blk / s.gp, tpg = s.tov / s.gp;
-                const fgPct = s.fga > 0 ? s.fgm / s.fga : 0.45;
-                const tpPct = s.tpa > 0 ? s.tpm / s.tpa : 0.33;
-                const efficiency = ppg + rpg * 1.2 + apg * 1.5 + spg * 2 + bpg * 2 - tpg * 1.2;
-                // MVP 评分: 数据效率 + 球队胜率(权重高) + 能力修正 + 效率(命中率)
-                const mvpScore = efficiency * 1.0 + winRate * 22 + p.o * 0.15 + (fgPct - 0.45) * 30 + (tpPct - 0.35) * 10;
-                // 防守评分: 抢断/盖帽 + 防守能力 + 球队失分越少越好
-                const defScore = spg * 6 + bpg * 5 + p.de * 0.5 + p.re * 0.15 + winRate * 8;
-                // 第六人评分: 板凳出场(按 ovr 排序，前5为首发，其余为替补)
-                const sortedRoster = [...(state.teamsPlayers[teamId] || [])].sort((a, b) => b.o - a.o);
-                const isBench = p.isFiller || !sortedRoster.slice(0, 5).includes(p);
-                const sixManScore = efficiency * 1.1 + (isBench ? 5 : -10) + p.o * 0.1;
-                // 进步最快: 与上赛季 ovr 差值 + 数据提升
-                const hist = playerHistory[pid];
-                const lastOvr = hist && hist.length ? hist[hist.length - 1].ovr : p.o;
-                const ovrDelta = p.o - lastOvr;
-                const mipScore = ovrDelta * 5 + efficiency * 0.5;
-                candidates.push({
-                    player: p, teamId, ppg, rpg, apg, spg, bpg, tpg, fgPct, tpPct, gp: s.gp, winRate,
-                    mvpScore, defScore, sixManScore, mipScore, ovrDelta, isBench,
-                });
+                if (!playerAgg[pid]) {
+                    // 首次记录：浅拷贝
+                    // 修复：单队 gp 也可能因模拟 bug 超过 82，clamp 至 82 防止 per-game 失真
+                    const firstGp = Math.min(82, s.gp || 0);
+                    playerAgg[pid] = {
+                        p,
+                        s: { ...s, gp: firstGp },
+                        gp: firstGp,
+                        teamId: p.t, // 用球员当前所属球队（交易后）
+                    };
+                } else {
+                    // 后续记录：累加（注意要累加原始计数，不是 per-game）
+                    const dst = playerAgg[pid].s;
+                    const keys = ["gp","min","pts","reb","ast","stl","blk","tov","pf","fgm","fga","tpm","tpa","ftm","fta","oreb"];
+                    keys.forEach(k => { dst[k] = (dst[k] || 0) + (s[k] || 0); });
+                    // 修复：跨队累加 gp 可能超过 82（球员被交易到比赛场次更多的球队时，
+                    // A 队 50 场 + B 队 35 场 = 85 场，物理上不可能）
+                    // 真实 NBA 规则：球员单季最多 82 场；按比例缩减所有计数统计以保证 per-game 准确
+                    if (dst.gp > 82) {
+                        const scale = 82 / dst.gp;
+                        keys.forEach(k => { if (typeof dst[k] === 'number') dst[k] = Math.round(dst[k] * scale); });
+                        dst.gp = 82;
+                    }
+                    playerAgg[pid].gp = dst.gp;
+                    // 球队归属：保留当前所属（p.t 已被交易更新），不因历史数据改变
+                }
+            });
+        });
+
+        // 基于聚合后的数据生成候选
+        Object.values(playerAgg).forEach(({ p, s, gp, teamId }) => {
+            if (gp < 20) return; // 至少打 20 场才参评（按整季总场次，不再因交易被拆分过滤）
+            const teamRec = state.records[teamId] || { win: 0, loss: 0 };
+            const teamGp = teamRec.win + teamRec.loss;
+            const winRate = teamGp > 0 ? teamRec.win / teamGp : 0;
+            const ppg = s.pts / gp, rpg = s.reb / gp, apg = s.ast / gp;
+            const spg = s.stl / gp, bpg = s.blk / gp, tpg = s.tov / gp;
+            const fgPct = s.fga > 0 ? s.fgm / s.fga : 0.45;
+            const tpPct = s.tpa > 0 ? s.tpm / s.tpa : 0.33;
+            // efficiency 调整：提高 apg 权重(1.5→2.5)，降低 bpg 权重(2.0→1.5)，避免"1助攻超级内线"刷 MVP
+            const efficiency = ppg + rpg * 1.2 + apg * 2.5 + spg * 2 + bpg * 1.5 - tpg * 1.2;
+            // MVP 硬门槛加严：原 ppg>=20 || apg>=8 过宽，导致 11/20 季 MVP 不达标
+            // 真实 NBA MVP 全部满足以下之一：
+            //   1. 得分≥22 且 胜率≥0.55（得分型核心，如 SGemVP/Anta）
+            //   2. 得分≥18 且 助攻≥9 且 胜率≥0.55（组织型核心，如约基奇/东契奇）
+            //   3. 得分≥25 且 胜率≥0.50（弱队得分王，如 76人艾弗森）
+            // 修复 S14 格兰特·贝利 ppg=17.6 当选 MVP 的问题（违反所有硬门槛）
+            const mvpEligible =
+                (ppg >= 22 && winRate >= 0.55) ||
+                (ppg >= 18 && apg >= 9 && winRate >= 0.55) ||
+                (ppg >= 25 && winRate >= 0.50);
+            // MVP 评分: 数据效率 + 球队胜率(权重 40→80) + 能力修正 + 命中率
+            // 真实 NBA MVP 几乎全部来自 50 胜以上球队(胜率>0.61)
+            // 加硬门槛：胜率<0.50 直接 -50 分；0.50-0.55 扣 -25 分（边缘球队）
+            const mvpWinRatePenalty = winRate < 0.50 ? -50 : (winRate < 0.55 ? -25 : 0);
+            // 助攻惩罚加强：apg<2 扣 -15（纯内线无组织），apg<3 扣 -10（原 -8 太轻）
+            const mvpAstPenalty = apg < 2 ? -15 : (apg < 3 ? -10 : 0);
+            // 得分<20 的纯防守型球员扣分（MVP 应是进攻核心）
+            const mvpPtsPenalty = ppg < 20 ? -6 : 0;
+            // 不符合硬门槛的球员给极低分（-1000），确保不可能当选
+            const mvpHardFilter = mvpEligible ? 0 : -1000;
+            const mvpScore = efficiency * 1.0 + winRate * 80 + p.o * 0.15 + (fgPct - 0.45) * 30 + (tpPct - 0.35) * 10
+                            + mvpWinRatePenalty + mvpAstPenalty + mvpPtsPenalty + mvpHardFilter;
+            // 防守评分: 抢断/盖帽 + 防守能力 + 球队失分越少越好
+            const defScore = spg * 6 + bpg * 5 + p.de * 0.5 + p.re * 0.15 + winRate * 8;
+            // 第六人评分: 板凳出场(按 ovr 排序，前5为首发，其余为替补)
+            const sortedRoster = [...(state.teamsPlayers[teamId] || [])].sort((a, b) => b.o - a.o);
+            const isBench = p.isFiller || !sortedRoster.slice(0, 5).includes(p);
+            const sixManScore = efficiency * 1.1 + (isBench ? 5 : -10) + p.o * 0.1;
+            // 进步最快: 与上赛季 ovr 差值 + 数据提升
+            const hist = playerHistory[p.id];
+            const lastOvr = hist && hist.length ? hist[hist.length - 1].ovr : p.o;
+            const ovrDelta = p.o - lastOvr;
+            const mipScore = ovrDelta * 5 + efficiency * 0.5;
+            candidates.push({
+                player: p, teamId, ppg, rpg, apg, spg, bpg, tpg, fgPct, tpPct, gp, winRate,
+                efficiency, mvpScore, defScore, sixManScore, mipScore, ovrDelta, isBench,
             });
         });
 
@@ -417,6 +595,9 @@ const SeasonEngine = (() => {
         // 修复 bug：原代码用 isRookie===true，但 offseasonProgression 已在赛季开始前清除 isRookie，
         // 导致 ROY 永远没人。改用 draftYear === state.year 判断（上赛季选秀进联盟的球员，
         // 本赛季就是新秀赛季）。同时兼容旧逻辑：isRookie 仍为 true 也算新秀。
+        // 修复：原按 mvpScore 排序，winRate*80 权重过高导致强队低分新秀(5分)击败弱队高分新秀(20分)
+        // 真实 ROY 评选主要看个人数据(得分/篮板/助攻/效率)，球队战绩仅作辅助参考
+        // royScore：个人数据为主(efficiency×1.2)，胜率权重仅 5（避免强队低分新秀垄断）
         const royList = sorted(candidates.filter(c => {
             if (c.player.isRookie === true) return true;
             // draftYear 记录球员被选中的年份；state.year 是刚结束赛季的起始年
@@ -426,10 +607,27 @@ const SeasonEngine = (() => {
             // 兼容 lastRookieYear 标记
             if (c.player.lastRookieYear === state.year) return true;
             return false;
-        }), "mvpScore");
-        const sixManList = sorted(candidates.filter(c => c.isBench), "sixManScore");
+        }).map(c => ({
+            ...c,
+            // ROY 评分：个人数据绝对主导，胜率仅微弱参考（真实 ROY 如文班亚马来自弱队仍当选）
+            // efficiency = ppg + rpg*1.2 + apg*2.5 + spg*2 + bpg*1.5 - tpg*1.2
+            // 15分+5板+5助 efficiency≈30 → royScore≈36+2.5+8=46.5；5分新秀 efficiency≈8 → royScore≈9.6+4+8=21.6
+            royScore: c.efficiency * 1.2 + c.winRate * 5 + c.gp * 0.1,
+        })).filter(c => {
+            // 修复：ROY 硬门槛——ppg >= 10 且 gp >= 30
+            // 真实 NBA ROY 最低得分约 10 PPG（2017 Brogdon 10.2）；原 ppg>=8 仍让 34% ROY <10 PPG
+            // 提至 10：与真实下限对齐，避免 8-9.9 PPG 低分新秀当选
+            // 若无新秀达标，本季 ROY 留空（好过选个低分新秀当 ROY）
+            return c.ppg >= 10 && c.gp >= 30;
+        }), "royScore");
+        const sixManList = sorted(candidates.filter(c => c.isBench).filter(c => {
+            // 修复：6MOY 硬门槛——ppg >= 12 且 gp >= 30，避免低分替补当选
+            // 原门槛 ppg>=10 仍让前 4 季 6MOY PPG<13（真实 6MOY 通常 13+ PPG，如克拉克森 17、普尔 20）
+            // 提升至 12：与基线 13 PPG 接近，确保获奖者数据符合真实预期
+            return c.ppg >= 12 && c.gp >= 30;
+        }), "sixManScore");
         const mipList = sorted(candidates.filter(c => {
-            if (c.ovrDelta < 2) return false;
+            if (c.ovrDelta < 4) return false; // 修复：原 <2 太低，第 2 季 ovrΔ=2 也当选；提到 4
             // 排除上赛季已成名的超巨（hist 存在且 lastOvr>=82）
             const h = playerHistory[c.player.id];
             if (h && h.length && h[h.length - 1].ovr >= 82) return false;
@@ -438,16 +636,49 @@ const SeasonEngine = (() => {
             return true;
         }), "mipScore");
 
-        // 最佳阵容：每阵 2后场(PG/SG) + 3前场(SF/PF/C)，依次选出一阵/二阵/三阵
+        // 最佳阵容：每阵 2后场(PG/SG) + 3前场(SF/PF/C)，限制中锋最多 1 人，避免一阵出现 3 中锋
+        // 修复：原无绝对门槛，导致 ovr=80 ppg=9.2 球员入选一阵（S6 PG 位置人才断层时）
+        // 增加按阵别设置硬门槛：一阵需 ppg≥15 或 ovr≥85；二三阵放宽至 ppg≥10 或 ovr≥80
         function pickAllNBATeams(sourceList, teamCount = 3) {
             const teams = [];
             const used = new Set();
             for (let t = 0; t < teamCount; t++) {
-                const guards = sourceList.filter(c => !used.has(c.player.id) && ["PG", "SG"].includes(c.player.p));
-                const forwards = sourceList.filter(c => !used.has(c.player.id) && ["SF", "PF", "C"].includes(c.player.p));
-                const team = [...guards.slice(0, 2), ...forwards.slice(0, 3)];
-                team.forEach(c => used.add(c.player.id));
-                teams.push(team);
+                // 阵别门槛：一阵最严，二三阵递减
+                const minPpg = t === 0 ? 15 : (t === 1 ? 12 : 10);
+                const minOvr = t === 0 ? 85 : (t === 1 ? 82 : 80);
+                const eligible = sourceList.filter(c =>
+                    !used.has(c.player.id) && (c.ppg >= minPpg || c.player.o >= minOvr)
+                );
+                const guards = eligible.filter(c => ["PG", "SG"].includes(c.player.p));
+                const wings = eligible.filter(c => ["SF", "PF"].includes(c.player.p));
+                const centers = eligible.filter(c => c.player.p === "C");
+                // 2 后场 + 3 前场；前场至多 1 名中锋，其余用 SF/PF 锋线
+                let finalTeam = [...guards.slice(0, 2)];
+                const frontAvail = [...centers.slice(0, 1), ...wings];
+                for (const c of frontAvail) {
+                    if (finalTeam.length >= 5) break;
+                    if (!finalTeam.includes(c)) finalTeam.push(c);
+                }
+                // 补位 fallback：若未满 5 人，从剩余最高分候选（不限位置，但需满足门槛）补足
+                if (finalTeam.length < 5) {
+                    const remaining = eligible.filter(c => !finalTeam.includes(c));
+                    for (const c of remaining) {
+                        if (finalTeam.length >= 5) break;
+                        finalTeam.push(c);
+                    }
+                }
+                // 终极兜底：若仍不足 5 人（人才断层），允许从 sourceList 取（不强制门槛，宁缺毋滥原则下的妥协）
+                if (finalTeam.length < 5) {
+                    const remaining = sourceList.filter(c =>
+                        !used.has(c.player.id) && !finalTeam.includes(c)
+                    );
+                    for (const c of remaining) {
+                        if (finalTeam.length >= 5) break;
+                        finalTeam.push(c);
+                    }
+                }
+                finalTeam.forEach(c => used.add(c.player.id));
+                teams.push(finalTeam);
             }
             return teams;
         }
@@ -503,6 +734,7 @@ const SeasonEngine = (() => {
         signFreeAgent,
         releasePlayer,
         computeAwards,
+        enforceHardCap,
     };
 })();
 

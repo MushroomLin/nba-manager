@@ -55,8 +55,10 @@ const NBAStats = (() => {
     }
 
     // 计算生涯汇总（场均/合计）
+    // 注意：同一赛季可能有多条记录（赛季中交易），按 year 去重统计赛季数
     function careerSummary(seasons) {
         if (!seasons || seasons.length === 0) return null;
+        const uniqueYears = new Set();
         const totals = seasons.reduce((acc, s) => {
             acc.gp += s.gp || 0;
             acc.pts += (s.pts || 0) * (s.gp || 0);
@@ -72,13 +74,14 @@ const NBAStats = (() => {
             acc.ftm += (s.ftm || 0) * (s.gp || 0);
             acc.fta += (s.fta || 0) * (s.gp || 0);
             acc.min += (s.min || 0) * (s.gp || 0);
+            if (s.year) uniqueYears.add(s.year);
             return acc;
         }, { gp:0, pts:0, reb:0, ast:0, stl:0, blk:0, tov:0, fgm:0, fga:0, fg3m:0, fg3a:0, ftm:0, fta:0, min:0 });
         if (totals.gp === 0) return null;
         const avg = (v) => (v / totals.gp);
         return {
             gp: totals.gp,
-            seasons: seasons.length,
+            seasons: uniqueYears.size,
             pts: +avg(totals.pts).toFixed(1),
             reb: +avg(totals.reb).toFixed(1),
             ast: +avg(totals.ast).toFixed(1),
@@ -136,32 +139,45 @@ const NBAStats = (() => {
         }
 
         // 2. 游戏内赛季（playerHistory + 当前 statAccum）
+        //    支持同一赛季多条记录（赛季中交易：每队一条），全部保留以分别展示
         if (gameSeasons && gameSeasons.length > 0) {
             gameSeasons.forEach(h => {
-                // 跳过真实数据已覆盖的年份（理论上不会冲突，游戏内年份 >= 2027）
-                if (seenYears.has(h.year)) return;
+                // 注意：不再按 year 去重，交易后同一赛季可有多条记录（每队一条）
+                // 真实数据年份（<=2026）不会被游戏内数据覆盖，无需跳过
+                if (h.year <= 2026) return; // 跳过真实数据已覆盖的年份
                 merged.push({
                     year: h.year,
                     team: h.teamId ? null : '-',  // teamId 在 UI 层转 abbr
                     _teamId: h.teamId || null,
                     age: h.age || null,
                     gp: h.gp || 0,
-                    min: 0,  // 游戏内历史未记录分钟
+                    min: h.min || 0,
                     pts: h.pts || 0,
                     reb: h.reb || 0,
                     ast: h.ast || 0,
-                    stl: 0, blk: 0, tov: 0,
-                    fgm: 0, fga: 0, fg3m: 0, fg3a: 0, ftm: 0, fta: 0,
-                    fg_pct: 0, fg3_pct: 0, ft_pct: 0,
+                    stl: h.stl || 0,
+                    blk: h.blk || 0,
+                    tov: h.tov || 0,
+                    fgm: h.fgm || 0,
+                    fga: h.fga || 0,
+                    fg3m: h.tpm || 0,   // 游戏内 tpm/tpa 对应 merged fg3m/fg3a
+                    fg3a: h.tpa || 0,
+                    ftm: h.ftm || 0,
+                    fta: h.fta || 0,
+                    fg_pct: h.fg_pct || 0,
+                    fg3_pct: h.fg3_pct || 0,
+                    ft_pct: h.ft_pct || 0,
                     ovr: h.ovr || null,  // 游戏内特有：能力值
                     source: 'game',
                 });
-                seenYears.add(h.year);
             });
         }
 
-        // 按 year 升序
-        merged.sort((a, b) => a.year - b.year);
+        // 按 year 升序，同年按球队 id 排序（保持确定性）
+        merged.sort((a, b) => {
+            if (a.year !== b.year) return a.year - b.year;
+            return (a._teamId || a.team || '') < (b._teamId || b.team || '') ? -1 : 1;
+        });
         return merged;
     }
 
