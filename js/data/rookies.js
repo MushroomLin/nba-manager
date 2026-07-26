@@ -242,33 +242,120 @@ const ROOKIE_PROTOTYPES = {
         "于","董","萧","程","金","崔","李","张","王","刘",
         "朴","尹","柳","曹","申","权","安","丁","玄","慎",
     ],
-    positions: ["PG","SG","SF","PF","C"],
+    // 修复 v10：位置分布平衡
+    //   等概率分配结果：SF 偏少(66)、C 偏多(99) —— SF ovr 均衡易被淘汰 + AI 签约位置盲选
+    //   v10d：AI 签约改为位置感知（优先补齐缺位），位置生成回到等概率分配
+    //   配合 pot>=85 保护 + 位置感知签约，预期各位置分布回归 80-100
+    positions: ["PG","SG","SF","PF","C","PG","SG","SF","PF","C","PG","SG","SF","PF","C"],
     // 新秀生成模板：每个模板对应一种类型的选秀前景
-    // 修复 v4：新秀初始过强 + 成长过快导致成才率虚高、老球员被超越
-    // 真实 NBA 新秀极少立即成为首发（除文班/詹姆斯等奇才），base 普遍 60-70
-    // 调低各档 base 和 pot，让新秀有成长空间但起步较弱，3 年内不易涨过 74 淘汰线
+    // 修复 v5：超巨数量锐减根因——elite pot 上限 91 太低，每年仅 1-4 人 pot>=90
+    //   初始 40 名 pot>=90 球员退役后无人接班，S6 超巨从 20 降至 4
+    //   真实 NBA 每年新晋超巨 2-3 人，考虑成才率需 5-7 名 pot>=90 新秀
+    //   提升 elite pot 上限至 94，high 上限至 85，确保超巨池持续补充
+    // 修复 v10：S30 超巨仅 8 人（目标 15-20），elite weight 2→3 增加精英新秀供给
+    //   60 人 × 3/26 ≈ 6.9 elite/年，pot 87-94 中约 40% 成才到 90+ → 每年 ~2.8 新晋超巨
+    // 修复 v11：S30 得分王后期仅 26 分（前5赛季 35-38，后期 26-30），缺 95+ 历史级球星
+    //   真实 NBA 每年代 2-3 个 ovr 95+ 球员（SGA/东契奇/扬尼斯/文班），撑起 32+ 得分王
+    //   elite pot 上限 94→96，每年 ~7 elite × 2/10 = 1.4 个 pot>=95 新秀，成才 40% → 10年 ~5.6 个 95+
     templates: [
-        // 精英级新秀 (状元热门) —— pot 84-91，base 69-74（原 87-94/74-79）
-        { tier:"elite", potMin:84, potMax:91, baseMin:69, baseMax:74, weight:2 },
-        // 高潜力乐透秀 —— pot 76-82，base 63-68（原 80-86/69-74）
-        { tier:"high", potMin:76, potMax:82, baseMin:63, baseMax:68, weight:4 },
-        // 扎实首轮秀 —— pot 70-76，base 59-64（原 75-81/67-72）
+        // 精英级新秀 (状元热门) —— pot 87-96，base 69-74
+        // 真实 NBA 状元级如文班亚马 pot 95+，詹姆斯/杜兰特 pot 94+，SGA/东契奇 pot 96+
+        { tier:"elite", potMin:87, potMax:96, baseMin:69, baseMax:74, weight:3 },
+        // 高潜力乐透秀 —— pot 79-85，base 63-68（上限 82→85，让乐透秀有冲击 90 的可能）
+        { tier:"high", potMin:79, potMax:85, baseMin:63, baseMax:68, weight:4 },
+        // 扎实首轮秀 —— pot 70-76，base 59-64
         { tier:"solid", potMin:70, potMax:76, baseMin:59, baseMax:64, weight:6 },
-        // 次轮角色球员 —— pot 64-70，base 55-60（原 69-75/61-66）
+        // 次轮角色球员 —— pot 64-70，base 55-60
         { tier:"role", potMin:64, potMax:70, baseMin:55, baseMax:60, weight:8 },
-        // 末轮/落选秀 —— pot 58-64，base 51-56（原 63-69/57-62）
+        // 末轮/落选秀 —— pot 58-64，base 51-56
         { tier:"deep", potMin:58, potMax:64, baseMin:51, baseMax:56, weight:5 },
     ]
 };
 
 // 根据位置生成新秀的能力值分布（内线、投篮、传球、篮板、防守、运动、球商）
+// 修复 v8：PG 原 pa=80 过高导致 ovr 虚高（位置分布 PG 117 人偏多），且 sh=74 偏低导致 per36 得分仅 14.6（真实 18-20）
+//   调整：PG sh 74→78（提升得分能力），pa 80→76（降低 ovr 虚高，使位置分布均衡）
+//   真实 NBA PG 参照：东契奇 sh88/pa88、亚历山大 sh86/pa75、库里 sh90/pa80 → sh 应接近或高于 pa
+// 修复 v11：PG 实测 114 人偏多（其他位置 68-95），per36 分 17.7 偏低（真实 19）
+//   原因：PG ovr 72.7 高于其他位置（SG 71、SF 70、PF 70、C 71），新秀池 PG 平均更易被高位选中
+//   调整：PG sh 78→80（提升得分能力），pa 76→72（降低 ovr 虚高至 72.0，与其他位置持平）
+//   新 PG ovr = 62*0.10 + 80*0.22 + 72*0.28 + 42*0.05 + 66*0.13 + 78*0.10 + 80*0.12 = 72.04 ✓
 const ROOKIE_POS_PROFILES = {
-    PG: { ins:62, sh:74, pa:80, re:42, de:66, at:78, iq:80 },
+    PG: { ins:62, sh:80, pa:72, re:42, de:66, at:78, iq:80 },
     SG: { ins:70, sh:78, pa:64, re:46, de:68, at:78, iq:74 },
     SF: { ins:72, sh:72, pa:62, re:54, de:72, at:78, iq:74 },
     PF: { ins:78, sh:64, pa:56, re:68, de:72, at:76, iq:70 },
     C:  { ins:80, sh:42, pa:46, re:80, de:74, at:72, iq:68 },
 };
 
+// 各位置身高体重档案（来源：现役 NBA 球员真实数据统计）
+// height 单位为英寸（6-9 = 81英寸），weight 单位为磅
+// min/max 覆盖 ~90% 球员范围，中位数作为生成基准
+const ROOKIE_PHYSICAL_PROFILES = {
+    PG: { htMin:71, htMax:76, htMedian:75, wtMin:170, wtMax:215, wtMedian:195 },  // 6-0~6-4, 中位 6-3
+    SG: { htMin:73, htMax:78, htMedian:77, wtMin:185, wtMax:230, wtMedian:205 },  // 6-1~6-6, 中位 6-5
+    SF: { htMin:75, htMax:80, htMedian:79, wtMin:195, wtMax:240, wtMedian:215 },  // 6-3~6-8, 中位 6-7
+    PF: { htMin:77, htMax:84, htMedian:80, wtMin:210, wtMax:260, wtMedian:230 },  // 6-5~7-0, 中位 6-8
+    C:  { htMin:79, htMax:87, htMedian:83, wtMin:225, wtMax:280, wtMedian:245 },  // 6-7~7-3, 中位 6-11
+};
+
+// 国籍池（来源：现役 NBA 球员国籍分布统计，USA 占 67%）
+// 真实新秀中美国本土球员占比更高（NCAA 为主），这里设 USA 权重 ~75%
+const ROOKIE_COUNTRIES = [
+    // USA 占 75%（权重 75）
+    { country:"USA", weight:75 },
+    // 加拿大 5%
+    { country:"Canada", weight:5 },
+    // 法国 3%
+    { country:"France", weight:3 },
+    // 澳大利亚 2%
+    { country:"Australia", weight:2 },
+    // 塞尔维亚 2%
+    { country:"Serbia", weight:2 },
+    // 德国 1.5%
+    { country:"Germany", weight:1.5 },
+    // 西班牙 1.5%
+    { country:"Spain", weight:1.5 },
+    // 尼日利亚 1.5%
+    { country:"Nigeria", weight:1.5 },
+    // 喀麦隆 1%
+    { country:"Cameroon", weight:1 },
+    // 立陶宛 1%
+    { country:"Lithuania", weight:1 },
+    // 阿根廷 1%
+    { country:"Argentina", weight:1 },
+    // 巴西 1%
+    { country:"Brazil", weight:1 },
+    // 日本 1%
+    { country:"Japan", weight:1 },
+    // 拉脱维亚 1%
+    { country:"Latvia", weight:1 },
+    // 克罗地亚 1%
+    { country:"Croatia", weight:1 },
+    // 斯洛文尼亚 0.5%
+    { country:"Slovenia", weight:0.5 },
+    // 巴哈马 0.5%
+    { country:"Bahamas", weight:0.5 },
+    // 希腊 0.5%
+    { country:"Greece", weight:0.5 },
+];
+
+// 美国大学池（来源：现役 NBA 球员大学分布 Top 30，Duke/Kentucky 最多）
+// 真实新秀约 80% 来自 NCAA（有大学），20% 国际/高中直进/发展联盟
+const ROOKIE_COLLEGES = [
+    "Duke","Kentucky","UCLA","Gonzaga","Baylor","Arizona","Michigan","Alabama",
+    "Kansas","Villanova","Virginia","Arkansas","Ohio State","North Carolina",
+    "Connecticut","Tennessee","Texas","Oregon","Auburn","Purdue","Indiana",
+    "Marquette","Texas Tech","Houston","Iowa State","Maryland","Florida",
+    "LSU","Georgia Tech","Wake Forest","USC","Stanford","Washington","Miami",
+    "Memphis","Oklahoma State","Missouri","Clemson","NC State","Syracuse",
+    "Wisconsin","Iowa","Minnesota","Illinois","Michigan State","Ohio",
+    "Xavier","Butler","Creighton","Providence","St. John's","Seton Hall",
+    "Georgetown","Notre Dame","BYU","San Diego State","Texas A&M","Oklahoma",
+];
+
 window.ROOKIE_PROTOTYPES = ROOKIE_PROTOTYPES;
 window.ROOKIE_POS_PROFILES = ROOKIE_POS_PROFILES;
+window.ROOKIE_PHYSICAL_PROFILES = ROOKIE_PHYSICAL_PROFILES;
+window.ROOKIE_COUNTRIES = ROOKIE_COUNTRIES;
+window.ROOKIE_COLLEGES = ROOKIE_COLLEGES;

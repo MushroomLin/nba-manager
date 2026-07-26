@@ -9,14 +9,67 @@ const DraftEngine = (() => {
 
     let rookieIdCounter = 0;
 
+    // 按权重随机选择国籍（来源：ROOKIE_COUNTRIES，USA 占 ~75%）
+    function pickCountry() {
+        const countries = window.ROOKIE_COUNTRIES || [{ country: "USA", weight: 1 }];
+        const total = countries.reduce((s, c) => s + c.weight, 0);
+        let r = Math.random() * total;
+        for (const c of countries) {
+            r -= c.weight;
+            if (r <= 0) return c.country;
+        }
+        return countries[0].country;
+    }
+
+    // 根据位置生成身高（英寸）和体重（磅）
+    // 用正态分布近似：以中位为均值，在 min~max 范围内波动
+    function pickHeightWeight(pos) {
+        const prof = (window.ROOKIE_PHYSICAL_PROFILES || {})[pos];
+        if (!prof) return { height: "6-7", weight: 200 };
+        // 身高：中位数附近概率最高，用三角分布近似正态
+        const htInches = randTriangleInt(prof.htMin, prof.htMax, prof.htMedian);
+        const height = Math.floor(htInches / 12) + "-" + (htInches % 12);
+        // 体重：与身高正相关，身高每 +1 英寸体重约 +5lb
+        const htOffset = (htInches - prof.htMedian) * 5;
+        const wt = Math.round(randTriangleInt(prof.wtMin, prof.wtMax, prof.wtMedian) + htOffset);
+        return { height, weight: Math.max(160, Math.min(300, wt)) };
+    }
+
+    // 三角分布随机整数（mode 为众数，概率最高）
+    function randTriangleInt(min, max, mode) {
+        const u = Math.random();
+        const range = max - min;
+        const d = (mode - min) / range;
+        let v;
+        if (u <= d) {
+            v = min + Math.sqrt(u * range * (mode - min));
+        } else {
+            v = max - Math.sqrt((1 - u) * range * (max - mode));
+        }
+        return Math.round(v);
+    }
+
+    // 选大学：美国球员 80% 有大学，国际球员无大学（来自本国联赛）
+    function pickCollege(country) {
+        if (country !== "USA") return "None";
+        if (Math.random() > 0.8) return "None"; // 20% 高中直进/发展联盟
+        const colleges = window.ROOKIE_COLLEGES;
+        if (!colleges || !colleges.length) return "None";
+        return colleges[Math.floor(Math.random() * colleges.length)];
+    }
+
     // 跨年度累积已生成新秀姓名，避免多年选秀出现重名
     const allTimeRookieNames = new Set();
 
-    // 生成新秀池（60人左右）
+    // 生成新秀池（60 人，匹配两轮选秀权数）
+    // 修复 v7：原 count=70 导致每年多生成 10 个落选新秀进入自由市场，
+    //   叠加淘汰机制后自由市场无限膨胀。真实 NBA 每年 60 个选秀权，
+    //   次轮后段落选并去海外/发展联盟，不进入 NBA 自由市场。
+    //   调整为 60：与选秀权数匹配，落选新秀数量降至 0（或极少）
     function generateRookieClass(year) {
         const proto = window.ROOKIE_PROTOTYPES;
         const rookies = [];
-        const count = 70;
+        const count = 60;
         // 按模板权重分配名额
         const pool = [];
         proto.templates.forEach(t => { for (let i = 0; i < t.weight; i++) pool.push(t); });
@@ -93,6 +146,11 @@ const DraftEngine = (() => {
             // 模板 potRaw 可能因 base+variance 推高 ovr 而不满足，这里兜底
             const pot = Math.max(potRaw, ovr + 2);
 
+            // 生成球员物理属性与背景信息（与真实 NBA 球员数据对齐）
+            const country = pickCountry();
+            const { height, weight } = pickHeightWeight(pos);
+            const college = pickCollege(country);
+
             rookies.push({
                 id: `rookie_${year}_${rookieIdCounter++}`,
                 n: name,
@@ -107,6 +165,11 @@ const DraftEngine = (() => {
                 draftYear: year,
                 yrsInLeague: 0,  // 新秀合同期第 1 年（offseasonProgression 会 +1）
                 tier: template.tier,
+                // 物理属性与背景（与真实 NBA 球员数据结构对齐，供球员详情展示）
+                height: height,       // 身高 "6-9" 格式
+                weight: weight,       // 体重 磅
+                country: country,     // 国籍
+                college: college,     // 大学（国际球员为 "None"）
             });
         }
         // 按综合能力排序（模拟选秀榜单）
@@ -244,6 +307,10 @@ const DraftEngine = (() => {
         rookie.t = teamId;
         rookie.sal = rookieSalary(rookie.o, pickNumber <= 30 ? 1 : 2);
         rookie.draftPick = pickNumber;
+        // 选秀信息（与真实 NBA 球员数据结构对齐，供球员详情展示）
+        // draftYear 已在生成时设置；此处补充 round/number
+        rookie.draft_round = pickNumber <= 30 ? 1 : 2;
+        rookie.draft_number = pickNumber <= 30 ? pickNumber : pickNumber - 30;
         return rookie;
     }
 

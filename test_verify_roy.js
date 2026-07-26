@@ -30,7 +30,15 @@ function genFiller(tid, idx) {
 
 function initState() {
     const teams = JSON.parse(JSON.stringify(TEAMS_DATA));
-    const players = PLAYERS_DATA.map((p,i)=>({...p, id:`p_${i}`, pot:p.o+randInt(0,4), isRookie:false, draftYear:null, yrsInLeague:5}));
+    // 镜像 app.js init 修复：给 age<=20 的初始球员标记为新秀（draftYear=2026），
+    // 让第一赛季有 ROY 候选（模拟上赛季选秀进联盟的球员）
+    const START_YEAR = 2026;
+    const players = PLAYERS_DATA.map((p,i)=>{
+        const isRookie = p.a <= 20;
+        return {...p, id:`p_${i}`, pot:p.o+randInt(0,4),
+            isRookie, draftYear: isRookie ? START_YEAR : null,
+            yrsInLeague: isRookie ? 0 : 5};
+    });
     const tp = {}; teams.forEach(t=>tp[t.id]=[]); players.forEach(p=>{if(tp[p.t])tp[p.t].push(p);});
     let f=0; teams.forEach(t=>{while(tp[t.id].length<14){const x=genFiller(t.id,f++);players.push(x);tp[t.id].push(x);}});
     const rec={}; teams.forEach(t=>rec[t.id]={win:0,loss:0,streak:0,ptsFor:0,ptsAgt:0});
@@ -150,24 +158,9 @@ function offseason(state) {
         state.playerHistory[p.id] = [{ year: state.year-1, ovr: p.o, teamId: p.t, age: s.age||p.a, gp: s.gp||0, min: s.min||0, pts: s.pts||0, reb: s.reb||0, ast: s.ast||0, stl: s.stl||0, blk: s.blk||0, tov: s.tov||0, pf: s.pf||0, fgm: s.fgm||0, fga: s.fga||0, tpm: s.fg3m||0, tpa: s.fg3a||0, ftm: s.ftm||0, fta: s.fta||0, oreb: s.oreb||0, fg_pct:0, fg3_pct:0, ft_pct:0 }];
     });
 
-    // 第一年先选新秀（模拟 2026 选秀）
-    state.year = 2026;
-    const rc0 = DraftEngine.generateRookieClass(2026);
-    const order0 = [...state.teams].map(t=>t.id);
-    let dp = 0;
-    while (dp < [...order0,...order0].length) {
-        const o = [...order0,...order0][dp];
-        const av = rc0.filter(r=>r.t===null); if (av.length===0) break;
-        const roster = state.teamsPlayers[o]||[];
-        const pk = DraftEngine.aiPick(av, roster);
-        if (pk) {
-            while (state.teamsPlayers[o].length>=15){let rel=state.teamsPlayers[o].filter(p=>p.isFiller).sort((a,b)=>a.o-b.o)[0]||[...state.teamsPlayers[o]].sort((a,b)=>a.o-b.o)[0];if(!rel)break;const i=state.teamsPlayers[o].findIndex(p=>p.id===rel.id);if(i>=0)state.teamsPlayers[o].splice(i,1);if(rel.isFiller)state.players=state.players.filter(p=>p.id!==rel.id);}
-            DraftEngine.assignRookieToTeam(pk, o, dp+1);
-            if (state.teamsPlayers[o]) state.teamsPlayers[o].push(pk);
-            state.players.push(pk);
-        }
-        dp++;
-    }
+    // 修复：实际游戏第一赛季前不选秀，新秀在第一赛季结束后才选秀。
+    // 第一赛季的 ROY 候选 = init 时标记为 draftYear=2026 的年轻初始球员（age<=20）
+    // 后续赛季的 ROY 候选 = 上一年选秀进联盟的新秀
 
     // 模拟 5 个赛季
     for (let s = 1; s <= 5; s++) {

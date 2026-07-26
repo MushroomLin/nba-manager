@@ -197,12 +197,15 @@ const SeasonEngine = (() => {
                 // 修复 v4：初始球员 pot = ovr + 0~4，gap < 3 时进入零均值导致不成长甚至退步
                 // 真实 NBA 24-27 岁是巅峰期，应稳步接近 pot 上限
                 // 修复方案：动态提升 pot 下限，确保 24-27 岁球员有成长空间
+                // 修复 v10：原 growthRate 0.30 让 elite 新秀(pot 92)在 24-27 岁仅涨 2-3 点，
+                //   难以从 87 涨到 90+，导致超巨数量不足。对高潜力(gap>=5)提升至 0.40
                 let target = p.pot || p.o;
                 // 24-27 岁球员 pot 下限提升至 ovr + 4（若原本更低）
                 if (target < p.o + 4) target = p.o + 4;
                 const gap = Math.max(0, target - p.o);
                 if (gap >= 3) {
-                    delta = Math.max(0, Math.round(gap * 0.30 + randInt(-1, 1))); // 仍向 pot 成长
+                    const growthRate = gap >= 5 ? 0.40 : 0.30; // 高潜力球员加速成长
+                    delta = Math.max(0, Math.round(gap * growthRate + randInt(-1, 1))); // 仍向 pot 成长
                 } else {
                     delta = randInt(-1, 1); // 接近 pot，基本持平
                 }
@@ -244,8 +247,9 @@ const SeasonEngine = (() => {
         });
 
         // 第二阶段：评估退役
-        // 规则：35岁以上老将按能力衰退程度概率退役；38岁以上强制退役概率提升；
-        // 保证联盟每年有合理数量的球员退役（约 20-30 人），与新秀补充量平衡
+        // 真实 NBA 每年约 5-8 人退役（30 队 × 15 人 = 450 人，平均生涯 12-15 年）
+        // 修复 v6：原目标 20-30 人/年过高（实际 38/年），导致联盟球员膨胀+老将过快消失
+        //   调整为真实 NBA 量级：5-8 人/年，让联盟人数稳定在 450 左右
         // 注意：自由球员（isFreeAgent=true）由 ageFreeAgents 处理退役，此处跳过
         players.forEach(p => {
             if (p.isFreeAgent) return;
@@ -258,35 +262,28 @@ const SeasonEngine = (() => {
             }
             // 真实球员：基于年龄和能力的退役概率
             // 球星保护：高 ovr 球员退役概率大幅降低，延长生涯（参考 LeBron/Curry/Durant 37+ 仍在阵）
-            // 修复：能力膨胀根因之一，提高退役概率让超巨更快淡出
+            // 修复 v11：原概率实测稳态 8.3人/年（真实 5-8），略偏高
+            //   主因 36-37 岁档概率 0.12/0.22 偏高，且 38+ 老将数量稳定累积
+            //   整体下调 ~20%：36岁 0.12→0.10，38岁 0.22→0.18，40岁 0.40→0.32，41+ 0.60→0.50
             let retireProb = 0;
-            if (p.a >= 41) retireProb = 0.80;
-            else if (p.a >= 40) retireProb = 0.55;
-            else if (p.a >= 38) retireProb = 0.35;
-            else if (p.a >= 36) retireProb = 0.20;
-            // 修复：中后期退役人数过低（S8=0, S13/15/17=1），低于 20-30 目标区间
-            // 提高 33-35 岁段退役概率，让老将更稳步退出，避免"退役真空期"
-            else if (p.a >= 34) retireProb = 0.12;
-            else if (p.a >= 33) retireProb = 0.06;
-            else if (p.a >= 32) retireProb = 0.03;
+            if (p.a >= 41) retireProb = 0.50;
+            else if (p.a >= 40) retireProb = 0.32;
+            else if (p.a >= 38) retireProb = 0.18;
+            else if (p.a >= 36) retireProb = 0.10;
+            else if (p.a >= 34) retireProb = 0.05;
+            else if (p.a >= 33) retireProb = 0.025;
             // 球星保护：高能力球员退役概率折扣
-            // 修复：原 0.45 折扣过强（ovr≥90 长期 14-28 个），调至 0.60 让超巨更早退役
-            if (p.o >= 90)      retireProb *= 0.60;
-            else if (p.o >= 86) retireProb *= 0.65;  // 一线巨星
-            else if (p.o >= 83) retireProb *= 0.75;  // 全明星
-            else if (p.o >= 80) retireProb *= 0.85;  // 优质首发
-            // 修复：超巨硬性年龄下限——ovr≥90 且年龄<36 不得退役（参考 LeBron/Curry/Durant 37+ 仍在阵）
-            // 原 37 岁下限保护过强，36 岁 ovr=90 球员退役概率仅 6.3%，造成超巨堆积
-            // 调整为 36 岁：让 36 岁超巨开始有退役概率（10.8%），37 岁以上正常退役
+            if (p.o >= 90)      retireProb *= 0.50;
+            else if (p.o >= 86) retireProb *= 0.60;  // 一线巨星
+            else if (p.o >= 83) retireProb *= 0.70;  // 全明星
+            else if (p.o >= 80) retireProb *= 0.80;  // 优质首发
+            // 超巨硬性年龄下限：ovr≥90 且年龄<36 不得退役（参考 LeBron/Curry/Durant 37+ 仍在阵）
             if (p.o >= 90 && p.a < 36) retireProb = 0;
-            // 修复：低龄球员豁免能力衰退退役——原 p.o<68 / p.o<62 加概率未设年龄下限，
-            // 导致 28-31 岁 ovr<62 球员 retireProb 达 0.37，20 季出现 4 例 <32 岁退役（真实 NBA 不存在）
-            // 真实 NBA 中低能力球员 30 岁前通常被裁/转海外，不算"退役"；此处仅对 ≥32 岁球员施加能力退役概率
-            // 修复：原 +0.25 过高导致 S1 老将集中退役（56-62人），降至 +0.18
-            if (p.a >= 32 && p.o < 68) retireProb += 0.12;
-            if (p.a >= 32 && p.o < 62) retireProb += 0.18;
+            // 低能力老将更易退役（仅对 ≥33 岁球员施加，避免低龄球员误退役）
+            if (p.a >= 33 && p.o < 68) retireProb += 0.08;
+            if (p.a >= 33 && p.o < 62) retireProb += 0.12;
             // 受过重伤（赛季报销）的老将更易退役
-            if (p.injured > 60 && p.a > 30) retireProb += 0.10;
+            if (p.injured > 60 && p.a > 30) retireProb += 0.08;
 
             if (Math.random() < retireProb) {
                 retired.push(p);
@@ -323,6 +320,9 @@ const SeasonEngine = (() => {
         // 原逻辑所有新秀都能进轮换且永远留联盟，导致联盟球员膨胀（360→791/8季）、新秀成才率虚高。
         // 修复 v4：原门槛 ovr<74 太低，新秀 3 年内涨过 74 即豁免，淘汰率接近 0
         // 提高门槛至 ovr<76，扩大年龄/年数范围，提高概率，确保联盟球员稳定
+        // 修复 v10：超巨数量从 20 降至 9，根因——elite 新秀(pot 87-94)前 2-3 年 ovr 70-75 时
+        //   被淘汰机制以 10-15% 概率切走，导致高潜力新秀无法成长到 90+
+        //   增加保护：pot>=85 的精英潜力新秀不参与淘汰（真实 NBA 中高顺位新秀有 3-4 年保障合同）
         players.forEach(p => {
             if (p.isFreeAgent || p.isRetired || p.isFiller) return;
             // 对 24-29 岁、yrsInLeague 2-5 年的球员生效（新秀合同期内/期后早期）
@@ -330,6 +330,8 @@ const SeasonEngine = (() => {
             if (p.a < 24 || p.a > 29) return;
             // 高 ovr 球员保护：已打出来（轮换主力）的不淘汰
             if (p.o >= 76) return;
+            // 高潜力保护：pot>=85 的精英新秀不淘汰（真实 NBA 高顺位新秀有保障合同 + 培养耐心）
+            if (p.pot != null && p.pot >= 85) return;
             // 淘汰概率：ovr 越低、年数越多，概率越高
             // 真实 NBA：ovr<65 的次轮秀 3 年内 70% 离开，ovr 70-73 的边缘球员 4 年内 40% 离开
             let cutProb = 0;

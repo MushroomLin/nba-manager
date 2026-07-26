@@ -140,11 +140,17 @@ const NBAStats = (() => {
 
         // 2. 游戏内赛季（playerHistory + 当前 statAccum）
         //    支持同一赛季多条记录（赛季中交易：每队一条），全部保留以分别展示
+        //    year 语义：游戏内和真实数据都用"赛季结束年"，如 year=2027 = 2026-27 赛季
+        //    真实数据覆盖到 maxRealYear，游戏内 year > maxRealYear 的才是游戏内独有赛季
+        //    游戏内 year <= maxRealYear 的赛季（如 seedInitialPlayerHistory 预填的）会被真实数据覆盖，跳过
         if (gameSeasons && gameSeasons.length > 0) {
+            // 计算真实数据的最大 year，用于过滤游戏内重复年份
+            const maxRealYear = merged.length > 0
+                ? Math.max(...merged.filter(s => s.source === 'real').map(s => s.year))
+                : 0;
             gameSeasons.forEach(h => {
-                // 注意：不再按 year 去重，交易后同一赛季可有多条记录（每队一条）
-                // 真实数据年份（<=2026）不会被游戏内数据覆盖，无需跳过
-                if (h.year <= 2026) return; // 跳过真实数据已覆盖的年份
+                // 跳过真实数据已覆盖的年份（避免同一赛季出现两条记录）
+                if (h.year <= maxRealYear) return;
                 merged.push({
                     year: h.year,
                     team: h.teamId ? null : '-',  // teamId 在 UI 层转 abbr

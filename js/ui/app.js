@@ -16,12 +16,27 @@ const App = (() => {
     function init(managerName, teamId) {
         const teams = JSON.parse(JSON.stringify(window.TEAMS_DATA));
         // 深拷贝球员并赋 id
-        const players = window.PLAYERS_DATA.map((p, i) => ({
-            ...p,
-            id: `p_${i}`,
-            pot: p.o + randInt(0, 4), // 初始潜力略高于当前
-            isRookie: false,
-        }));
+        // 修复：给年轻初始球员标记为新秀（模拟上赛季选秀进联盟），让第一赛季有 ROY 候选
+        // 真实 NBA 2026-27 赛季的 ROY 是 2026 年选秀进联盟的球员；
+        // PLAYERS_DATA 无 draftYear 字段，用年龄近似：age <= 20 视为新秀（约 20 人，含弗拉格/迪班萨等）
+        const START_YEAR = 2026;
+        const players = window.PLAYERS_DATA.map((p, i) => {
+            const isRookie = p.a <= 20;
+            // 修复 v5：超巨数量锐减根因——初始 pot = ovr + 0~4，导致 ovr 85-89 的球星 pot 平均 87-89，
+            //   永远无法突破 90。让 ovr>=83 的球员 pot 至少 90+，确保超巨池可持续补充
+            //   真实 NBA 中 25 岁左右的 85+ 球星（如东契奇/亚历山大/文班）仍有成长空间到 90+
+            let pot = p.o + randInt(0, 4);
+            if (p.o >= 83 && p.a <= 27) pot = Math.max(pot, 90 + randInt(0, 4)); // 巅峰期球星可冲击 90+
+            else if (p.o >= 80 && p.a <= 24) pot = Math.max(pot, 88 + randInt(0, 3)); // 年轻全明星有成长空间
+            return {
+                ...p,
+                id: `p_${i}`,
+                pot,
+                isRookie,
+                draftYear: isRookie ? START_YEAR : null,
+                yrsInLeague: isRookie ? 0 : 5, // 新秀合同期第 1 年；老球员默认 5 年（已过新秀期）
+            };
+        });
 
         // 按球队分组
         const teamsPlayers = {};
@@ -70,6 +85,7 @@ const App = (() => {
             injuryLog: [], // 本季伤病记录（用于展示）
             tradeLog: [], // 本季 AI 交易记录（用于展示）
             rosterVersion: 2027, // 名单版本号，与 main.js 中 CURRENT_ROSTER_VERSION 对齐
+            schemaVersion: 2, // 存档 schema 版本：2 = year 用结束年语义（避免旧存档迁移）
         };
         teams.forEach(t => state.statAccum[t.id] = {});
         updateStandings();
@@ -96,6 +112,18 @@ const App = (() => {
         if (!state.tactics) state.tactics = { pace: 1, defense: 1, rotation: 1 };
         if (!state.awardsHistory) state.awardsHistory = [];
         if (!state.playerHistory) state.playerHistory = {};
+        // 兼容旧存档：playerHistory.year 旧语义为"赛季起始年"（2026=2026-27赛季），
+        // 新语义为"赛季结束年"（2027=2026-27赛季）。迁移：所有 year += 1
+        // 用 schemaVersion 标记避免重复迁移
+        if (state.playerHistory && Object.keys(state.playerHistory).length > 0 && state.schemaVersion !== 2) {
+            for (const pid in state.playerHistory) {
+                state.playerHistory[pid].forEach(h => {
+                    if (typeof h.year === 'number') h.year += 1;
+                });
+            }
+            state.schemaVersion = 2;
+            console.log('[迁移] playerHistory year 语义已从起始年迁移为结束年');
+        }
         if (!state.injuryLog) state.injuryLog = [];
         if (!state.tradeLog) state.tradeLog = [];
         if (!state.rosterVersion) state.rosterVersion = 0;
@@ -238,12 +266,33 @@ const App = (() => {
             if (t.id === myId) return; // 玩家球队由玩家自己签约
             const roster = state.teamsPlayers[t.id];
             // 1. 名单不足 14 人：签约补足
+            // 修复 v10：原逻辑位置盲选（只看 ovr），SG ovr 略高于 SF 导致 SG 被优先签约，
+            //   SF 滞留自由市场最终退役，位置分布失衡（SF 68 vs SG 107）
+            //   新逻辑：优先补齐位置空缺（每位置 < 2 人时优先签该位置 FA）
             while (roster.length < 14) {
+                // 统计各位置人数，找出最缺的位置
+                const posCounts = { PG: 0, SG: 0, SF: 0, PF: 0, C: 0 };
+                roster.forEach(p => { if (posCounts[p.p] !== undefined) posCounts[p.p]++; });
+                const needyPos = Object.keys(posCounts).filter(pos => posCounts[pos] < 2).sort((a, b) => posCounts[a] - posCounts[b]);
+
                 let target = null;
-                for (const fa of availableFas) {
-                    if (fa.t !== null || fa.isRetired) continue;
-                    target = fa;
-                    break;
+                // 优先签缺位位置的 FA
+                for (const pos of needyPos) {
+                    for (const fa of availableFas) {
+                        if (fa.t !== null || fa.isRetired) continue;
+                        if (fa.p !== pos) continue;
+                        target = fa;
+                        break;
+                    }
+                    if (target) break;
+                }
+                // 无缺位或缺位无合适 FA，签最高 ovr
+                if (!target) {
+                    for (const fa of availableFas) {
+                        if (fa.t !== null || fa.isRetired) continue;
+                        target = fa;
+                        break;
+                    }
                 }
                 if (!target) break;
                 if (!trySign(t.id, roster, target)) break;
@@ -538,7 +587,7 @@ const App = (() => {
             const champStr = champ ? `${champ.name}<br><span class="muted" style="font-size:11px">${champ.finalsScore||'-'}</span>` : '-';
             const fmvpStr = (champ && champ.finalsMVP) ? `${champ.finalsMVP.n}<br><span class="muted" style="font-size:11px">${champ.finalsMVP.ppg.toFixed(1)}分 ${champ.finalsMVP.rpg.toFixed(1)}板 ${champ.finalsMVP.apg.toFixed(1)}助</span>` : '-';
             return `<tr>
-                <td class="num"><b>${a.year}</b></td>
+                <td class="num"><b>${a.year}-${String(a.year+1).slice(-2)}</b></td>
                 <td>${mvp}</td><td>${eMvp}</td><td>${wMvp}</td>
                 <td>${fmvpStr}</td>
                 <td>${dpoy}</td><td>${roy}</td><td>${sixMan}</td><td>${mip}</td>
@@ -2009,9 +2058,16 @@ const App = (() => {
     //  4. 新秀首赛季即使 gp=0（未进轮换）也记录一条零数据行，保证生涯时间线连续
     function recordPlayerHistory() {
         // 注意：startDraft 已把 state.year +1（进入新赛季），所以刚结束的赛季是 state.year - 1
-        const prevYear = state.year - 1;
+        // year 语义统一为"赛季结束年"（与真实 NBA 数据一致）：
+        //   游戏内 state.year=2026 表示 2026-27 赛季（起始年），对应结束年 = state.year + 1 = 2027
+        //   真实数据 year=2026 表示 2025-26 赛季（结束年）
+        //   两者不冲突，mergeSeasons 可正确按 year 去重
+        // 此处 state.year 已被 startDraft +1，刚结束赛季的 state.year 原值 = state.year - 1（起始年），
+        // 对应结束年 = (state.year - 1) + 1 = state.year
+        const prevYear = state.year;
         state.players.forEach(p => {
             // 跳过刚选中的新秀（还没打任何比赛，避免 phantom 零数据行）
+            // draftYear 用起始年语义，刚选中新秀 draftYear === state.year
             if (p.draftYear === state.year) return;
             if (!state.playerHistory[p.id]) state.playerHistory[p.id] = [];
             let hasRecord = false;
@@ -2050,7 +2106,8 @@ const App = (() => {
             });
             // 新秀首赛季未进轮换（gp=0）：记录一条零数据行保证生涯连续性
             // 避免新秀生涯数据"黑洞"（首年完全缺失）
-            if (!hasRecord && p.draftYear === prevYear) {
+            // draftYear 用起始年语义，刚结束赛季的起始年 = state.year - 1
+            if (!hasRecord && p.draftYear === state.year - 1) {
                 state.playerHistory[p.id].push({
                     year: prevYear,
                     ovr: p.o,
@@ -2072,7 +2129,10 @@ const App = (() => {
         if (!state || state.playerHistory === undefined) return;
         // 仅在 playerHistory 完全空时预填（避免覆盖已有存档数据）
         if (Object.keys(state.playerHistory).length > 0) return;
-        const prevYear = state.year - 1;
+        // year 语义：游戏内 state.year=2026 表示 2026-27 赛季（起始年），
+        // 上赛季 = 2025-26 赛季，真实数据 year=2026（结束年语义）
+        // 所以 prevYear = state.year（取真实数据的结束年）
+        const prevYear = state.year;
         const nameMap = NBAStats.getNameMap();
         const stats = NBAStats.getStats();
         let seeded = 0;
@@ -2081,10 +2141,10 @@ const App = (() => {
             if (!nbaId) return;
             const nbaPlayer = stats[String(nbaId)];
             if (!nbaPlayer || !nbaPlayer.seasons || nbaPlayer.seasons.length === 0) return;
-            // 优先取 year=prevYear 的赛季；若无则取最近一个 < state.year 的赛季
+            // 优先取 year=prevYear 的赛季；若无则取最近一个 <= state.year 的赛季
             let season = nbaPlayer.seasons.find(s => s.year === prevYear);
             if (!season) {
-                const past = nbaPlayer.seasons.filter(s => s.year < state.year);
+                const past = nbaPlayer.seasons.filter(s => s.year <= state.year);
                 if (past.length === 0) return;
                 season = past[past.length - 1];
             }
@@ -2629,8 +2689,9 @@ const App = (() => {
             if (!cur || cur.gp === 0) return;
             const gp = cur.gp;
             const div = (v) => +(v / Math.max(1, gp)).toFixed(1);
+            // year 用"赛季结束年"语义（state.year+1），与真实数据/recordPlayerHistory 一致
             gameSeasons.push({
-                year: state.year,
+                year: state.year + 1,
                 age: p.a,
                 ovr: p.o,
                 teamId: t.id,
@@ -2710,7 +2771,7 @@ const App = (() => {
         // 生涯汇总（基于合并后的全部赛季）
         const career = NBAStats.careerSummary(merged);
 
-        // 球员基本信息（来自真实数据）
+        // 球员基本信息：优先用真实 NBA 数据，无则用游戏内生成字段（新秀/自定义球员）
         let infoHtml = '';
         if (realData) {
             const draftStr = realData.draft_year && realData.draft_year !== 'Undrafted'
@@ -2723,6 +2784,19 @@ const App = (() => {
                     ${realData.weight ? `<span>⚖️ ${realData.weight}lb</span>` : ''}
                     ${realData.college && realData.college !== 'None' ? `<span>🎓 ${realData.college}</span>` : ''}
                     ${realData.country ? `<span>🌐 ${realData.country}</span>` : ''}
+                    <span>📋 ${draftStr}</span>
+                </div>`;
+        } else if (p.height || p.weight || p.country || p.college || p.draftYear) {
+            // 游戏内生成的球员（新秀）：用球员自身字段展示
+            const draftStr = p.draftYear
+                ? (p.draft_round ? `${p.draftYear}年第${p.draft_round}轮 #${p.draft_number}` : `${p.draftYear}年选秀`)
+                : '未选秀';
+            infoHtml = `
+                <div style="display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--text-dim);margin-bottom:10px">
+                    ${p.height ? `<span>📏 ${p.height}</span>` : ''}
+                    ${p.weight ? `<span>⚖️ ${p.weight}lb</span>` : ''}
+                    ${p.college && p.college !== 'None' ? `<span>🎓 ${p.college}</span>` : ''}
+                    ${p.country ? `<span>🌐 ${p.country}</span>` : ''}
                     <span>📋 ${draftStr}</span>
                 </div>`;
         }
