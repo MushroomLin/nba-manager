@@ -1364,10 +1364,10 @@ const App = (() => {
         // MIP 展示带提升数据：显示本季数据 + 较上赛季提升
         const fmtMip = (c) => c ? `${c.player.n} <span class="muted" style="font-size:12px">(${teamAbbr(c.teamId)})</span> <span class="muted" style="font-size:11px">${c.ppg.toFixed(1)}分 ${c.rpg.toFixed(1)}板 ${c.apg.toFixed(1)}助</span> <span style="font-size:11px;color:var(--success)">较上赛季 +${c.ppgDelta.toFixed(1)}分 +${c.rpgDelta.toFixed(1)}板 +${c.apgDelta.toFixed(1)}助 / ovr ${c.lastPpg!=null?c.ovrDelta+'+':''}</span>` : '<span class="muted">无</span>';
         const isMine = (c) => c && c.teamId === myId;
-        const winnerRow = (label, c) => `
+        const winnerRow = (label, c, pendingHint) => `
             <div class="award-row ${isMine(c) ? 'mine' : ''}">
                 <div class="award-label">${label}</div>
-                <div class="award-winner">${fmt(c)}${isMine(c) ? ' <span class="tag tag-rookie">我的球员</span>' : ''}</div>
+                <div class="award-winner">${c ? fmt(c) : (pendingHint ? `<span class="muted" style="font-size:12px">⏳ ${pendingHint}</span>` : '<span class="muted">无</span>')}${isMine(c) ? ' <span class="tag tag-rookie">我的球员</span>' : ''}</div>
             </div>`;
         const winnerRowCustom = (label, c, fmtFn) => `
             <div class="award-row ${isMine(c) ? 'mine' : ''}">
@@ -1395,8 +1395,9 @@ const App = (() => {
             <div class="modal-title">🏆 ${awards.year}-${awards.year+1} 赛季奖项</div>
             <div class="card-title">个人奖项</div>
             ${winnerRow('最有价值球员 MVP', awards.mvp)}
-            ${winnerRow('东部最有价值球员', awards.eastMvp)}
-            ${winnerRow('西部最有价值球员', awards.westMvp)}
+            ${winnerRow('东部决赛 MVP', awards.eastMvp, '季后赛分区决赛结束后评选')}
+            ${winnerRow('西部决赛 MVP', awards.westMvp, '季后赛分区决赛结束后评选')}
+            ${winnerRow('总决赛最有价值球员 FMVP', awards.fmvp, '总决赛结束后评选')}
             ${winnerRow('最佳防守球员 DPOY', awards.dpoy)}
             ${winnerRow('最佳新秀 ROY', awards.roy)}
             ${winnerRow('最佳第六人 6MOY', awards.sixMan)}
@@ -2535,51 +2536,56 @@ const App = (() => {
         const ageColor = p.a <= 24 ? 'var(--success)' : p.a >= 33 ? 'var(--nba-red-light)' : 'var(--text)';
         // 伤病状态
         const injuryHtml = p.injured ? `<div style="margin-top:10px;padding:8px 12px;background:rgba(231,76,60,0.15);border-radius:8px;color:var(--nba-red-light);font-size:13px">🚑 受伤中，预计缺阵 ${p.injured} 场</div>` : '';
-        // 获奖记录（兼容新旧字段：新字段 allNBAFirst/Second/Third 等，旧字段 allNBA 等）
-        const awards = (state.awardsHistory || []).filter(a => {
-            const inFirst  = (a.allNBAFirst  || []).includes(pid);
-            const inSecond = (a.allNBASecond || []).includes(pid);
-            const inThird  = (a.allNBAThird  || []).includes(pid);
-            const inDefF   = (a.allDefFirst  || []).includes(pid);
-            const inDefS   = (a.allDefSecond || []).includes(pid);
-            const inRookF  = (a.allRookieFirst  || []).includes(pid);
-            const inRookS  = (a.allRookieSecond || []).includes(pid);
-            const inOldNBA = (a.allNBA || []).includes(pid);
-            const inOldDef = (a.allDefensive || []).includes(pid);
-            const inOldRook = (a.allRookie || []).includes(pid);
-            return (a.mvp && a.mvp.player.id === pid) || (a.eastMvp && a.eastMvp.player.id === pid) || (a.westMvp && a.westMvp.player.id === pid) || (a.dpoy && a.dpoy.player.id === pid) || (a.roy && a.roy.player.id === pid)
-                || (a.sixMan && a.sixMan.player.id === pid) || (a.mip && a.mip.player.id === pid)
-                || inFirst || inSecond || inThird || inDefF || inDefS || inRookF || inRookS
-                || inOldNBA || inOldDef || inOldRook;
-        });
-        const awardBadges = awards.map(a => {
-            const items = [];
-            if (a.mvp && a.mvp.player.id === pid) items.push('MVP');
-            if (a.eastMvp && a.eastMvp.player.id === pid) items.push('东部MVP');
-            if (a.westMvp && a.westMvp.player.id === pid) items.push('西部MVP');
-            if (a.dpoy && a.dpoy.player.id === pid) items.push('DPOY');
-            if (a.roy && a.roy.player.id === pid) items.push('ROY');
-            if (a.sixMan && a.sixMan.player.id === pid) items.push('6MOY');
-            if (a.mip && a.mip.player.id === pid) items.push('MIP');
+        // 获奖记录：按奖项类型分组，展示获奖年份（替代旧版"每赛季挤一个 badge"）
+        // 兼容新旧字段：新字段 allNBAFirst/Second/Third 等，旧字段 allNBA/allDefensive/allRookie
+        const awardGroups = {}; // {awardType: Set([year1, year2])}
+        const addAward = (type, year) => {
+            if (!awardGroups[type]) awardGroups[type] = new Set();
+            awardGroups[type].add(year);
+        };
+        (state.awardsHistory || []).forEach(a => {
+            if (a.mvp && a.mvp.player.id === pid) addAward('MVP', a.year);
+            if (a.eastMvp && a.eastMvp.player.id === pid) addAward('东部决赛MVP', a.year);
+            if (a.westMvp && a.westMvp.player.id === pid) addAward('西部决赛MVP', a.year);
+            if (a.dpoy && a.dpoy.player.id === pid) addAward('DPOY', a.year);
+            if (a.roy && a.roy.player.id === pid) addAward('ROY', a.year);
+            if (a.sixMan && a.sixMan.player.id === pid) addAward('6MOY', a.year);
+            if (a.mip && a.mip.player.id === pid) addAward('MIP', a.year);
             // 总决赛 MVP：从 champions 历史中查找
             const champ = state.champions.find(c => c.year === a.year && c.finalsMVP && c.finalsMVP.id === pid);
-            if (champ) items.push('FMVP');
-            // 最佳阵容：标注阵次
-            if ((a.allNBAFirst || []).includes(pid)) items.push('一阵');
-            else if ((a.allNBASecond || []).includes(pid)) items.push('二阵');
-            else if ((a.allNBAThird || []).includes(pid)) items.push('三阵');
-            else if ((a.allNBA || []).includes(pid)) items.push('最佳阵容');
+            if (champ) addAward('总决赛MVP', a.year);
+            // 最佳阵容
+            if ((a.allNBAFirst || []).includes(pid)) addAward('最佳阵容一阵', a.year);
+            else if ((a.allNBASecond || []).includes(pid)) addAward('最佳阵容二阵', a.year);
+            else if ((a.allNBAThird || []).includes(pid)) addAward('最佳阵容三阵', a.year);
+            else if ((a.allNBA || []).includes(pid)) addAward('最佳阵容', a.year);
             // 防守阵
-            if ((a.allDefFirst || []).includes(pid)) items.push('防守一阵');
-            else if ((a.allDefSecond || []).includes(pid)) items.push('防守二阵');
-            else if ((a.allDefensive || []).includes(pid)) items.push('防守阵');
+            if ((a.allDefFirst || []).includes(pid)) addAward('最佳防守一阵', a.year);
+            else if ((a.allDefSecond || []).includes(pid)) addAward('最佳防守二阵', a.year);
+            else if ((a.allDefensive || []).includes(pid)) addAward('最佳防守阵容', a.year);
             // 新秀阵
-            if ((a.allRookieFirst || []).includes(pid)) items.push('新秀一阵');
-            else if ((a.allRookieSecond || []).includes(pid)) items.push('新秀二阵');
-            else if ((a.allRookie || []).includes(pid)) items.push('新秀阵');
-            return `<span class="award-badge">${a.year} ${items.join('/')}</span>`;
+            if ((a.allRookieFirst || []).includes(pid)) addAward('新秀一阵', a.year);
+            else if ((a.allRookieSecond || []).includes(pid)) addAward('新秀二阵', a.year);
+            else if ((a.allRookie || []).includes(pid)) addAward('新秀阵容', a.year);
+        });
+        // 按奖项重要性排序展示
+        const awardOrder = ['MVP', '总决赛MVP', '东部决赛MVP', '西部决赛MVP', 'DPOY', 'ROY', '6MOY', 'MIP',
+            '最佳阵容一阵', '最佳阵容二阵', '最佳阵容三阵', '最佳防守一阵', '最佳防守二阵', '新秀一阵', '新秀二阵'];
+        const awardIcons = { MVP:'🏆', 总决赛MVP:'🏆', 东部决赛MVP:'🏆', 西部决赛MVP:'🏆', DPOY:'🛡️', ROY:'🌟', '6MOY':'🔥', MIP:'📈' };
+        const fmtYear = (y) => `${y}-${String(y+1).slice(2)}`;
+        const awardCards = awardOrder.filter(t => awardGroups[t]).map(t => {
+            const years = [...awardGroups[t]].sort((a, b) => b - a);
+            const icon = awardIcons[t] || '🏅';
+            const count = years.length;
+            const yearsStr = years.map(fmtYear).join('、');
+            return `<div class="award-card">
+                <span class="award-icon">${icon}</span>
+                <span class="award-type">${t}</span>
+                ${count > 1 ? `<span class="award-count">×${count}</span>` : ''}
+                <span class="award-years">${yearsStr}</span>
+            </div>`;
         }).join('');
-        const awardHtml = awardBadges ? `<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px">${awardBadges}</div>` : '';
+        const awardHtml = awardCards ? `<div class="awards-list">${awardCards}</div>` : '';
 
         // ===== 合并生涯数据：真实NBA历史 + 游戏内赛季 =====
         // 1. 收集游戏内赛季数据：playerHistory（历史赛季）+ statAccum（当前赛季）
