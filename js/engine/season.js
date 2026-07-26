@@ -186,33 +186,34 @@ const SeasonEngine = (() => {
             let delta = 0;
             if (p.a <= 23) {
                 // 年轻球员成长（朝潜力靠近）
-                // 成长系数：高潜力新秀(pot-o>=10)用 0.50 加速成长补充超巨池，其余用 0.38
-                // 修复：超巨数量长期低于目标下限（8-20），新秀成长速率跟不上超巨退役速率
-                // 取消 max(1, ...) 强制最小 +1：让已接近 pot 的球员自然停止成长
+                // 修复 v4：原 0.50/0.62 让新秀 3 年涨 6-9 点，超过真实 NBA 的 3-5 点
+                // 降至 0.32/0.42：3 年涨 4-6 点，配合降低后的新秀初始强度，成才率回归合理
                 const target = p.pot || p.o + 3;
-                // 修复：高潜新秀成长率 0.50→0.58，弥补 randInt 零均值化后超巨培养过慢
-                // （8 季超巨 <5，低于 5-15 目标区间）。0.58 让 pot=92,o=78 新秀单季 +6-8，3 季达 90+
-                const growthRate = (p.pot && p.pot - p.o >= 10) ? 0.58 : 0.38;
-                // 修复：randInt(-1, 2) 期望 +0.5 导致联盟 avgOvr 持续膨胀（75→78）
-                // 改为 randInt(-1, 1) 零均值，让成长更稳定
+                const growthRate = (p.pot && p.pot - p.o >= 10) ? 0.42 : 0.32;
                 const grow = Math.round((target - p.o) * growthRate + randInt(-1, 1));
                 delta = Math.max(0, grow); // 至少不退步（年轻球员保护）
             } else if (p.a <= 27) {
-                // 巅峰期微涨
-                // 修复：randInt(-1, 2) 期望 +0.5 导致巅峰期球员持续上涨（实测 +0.5/季）
-                // 改为 randInt(-1, 1) 零均值，巅峰期应基本持平
-                delta = randInt(-1, 1);
+                // 巅峰期：朝潜力稳步成长
+                // 修复 v4：初始球员 pot = ovr + 0~4，gap < 3 时进入零均值导致不成长甚至退步
+                // 真实 NBA 24-27 岁是巅峰期，应稳步接近 pot 上限
+                // 修复方案：动态提升 pot 下限，确保 24-27 岁球员有成长空间
+                let target = p.pot || p.o;
+                // 24-27 岁球员 pot 下限提升至 ovr + 4（若原本更低）
+                if (target < p.o + 4) target = p.o + 4;
+                const gap = Math.max(0, target - p.o);
+                if (gap >= 3) {
+                    delta = Math.max(0, Math.round(gap * 0.30 + randInt(-1, 1))); // 仍向 pot 成长
+                } else {
+                    delta = randInt(-1, 1); // 接近 pot，基本持平
+                }
             } else if (p.a <= 31) {
                 // 巅峰末期开始衰退（期望 -1）
                 delta = randInt(-3, 1);
             } else if (p.a <= 34) {
                 // 老将加速衰退
-                // 修复 v2：能力膨胀仍存在（avgOvr 75.35→78.81），进一步加快老将衰退
-                // 期望从 -2 提到 -2.5，让 32+ 球员更快退出超巨行列
                 delta = randInt(-5, 0);
             } else {
                 // 高龄快速衰退
-                // 修复 v2：期望从 -3 提到 -3.5，加速超巨淡出
                 delta = randInt(-7, 0);
             }
             // 超巨保护：ovr≥90 的球员单季衰退不超过 -6，延长巅峰期但允许自然衰退
@@ -314,6 +315,40 @@ const SeasonEngine = (() => {
                 // 把新秀赛季信息存入 lastRookieYear，供 computeAwards 评选 ROY 使用
                 p.lastRookieYear = p.draftYear;
                 p.isRookie = false;
+            }
+        });
+
+        // 第五阶段：新秀/年轻球员"打不出来"淘汰机制
+        // 真实 NBA 中约 40% 首轮秀、70% 次轮秀 3 年内离开联盟。
+        // 原逻辑所有新秀都能进轮换且永远留联盟，导致联盟球员膨胀（360→791/8季）、新秀成才率虚高。
+        // 修复 v4：原门槛 ovr<74 太低，新秀 3 年内涨过 74 即豁免，淘汰率接近 0
+        // 提高门槛至 ovr<76，扩大年龄/年数范围，提高概率，确保联盟球员稳定
+        players.forEach(p => {
+            if (p.isFreeAgent || p.isRetired || p.isFiller) return;
+            // 对 24-29 岁、yrsInLeague 2-5 年的球员生效（新秀合同期内/期后早期）
+            if (p.yrsInLeague == null || p.yrsInLeague < 2 || p.yrsInLeague > 5) return;
+            if (p.a < 24 || p.a > 29) return;
+            // 高 ovr 球员保护：已打出来（轮换主力）的不淘汰
+            if (p.o >= 76) return;
+            // 淘汰概率：ovr 越低、年数越多，概率越高
+            // 真实 NBA：ovr<65 的次轮秀 3 年内 70% 离开，ovr 70-73 的边缘球员 4 年内 40% 离开
+            let cutProb = 0;
+            if (p.o < 60) cutProb = 0.65;
+            else if (p.o < 65) cutProb = 0.50;
+            else if (p.o < 68) cutProb = 0.35;
+            else if (p.o < 70) cutProb = 0.22;
+            else if (p.o < 72) cutProb = 0.15;
+            else cutProb = 0.10; // ovr 72-75
+            // 年数加成：第 3-5 年概率递增
+            if (p.yrsInLeague >= 3) cutProb *= 1.4;
+            if (p.yrsInLeague >= 4) cutProb *= 1.3;
+            if (p.yrsInLeague >= 5) cutProb *= 1.2;
+            if (Math.random() < cutProb) {
+                // 转自由市场而非直接退役（让 AI 球队有机会低价捡漏）
+                p.isFreeAgent = true;
+                p.t = null;
+                p.yearsInFreeAgency = 0;
+                // 不加入 retired，保留在 state.players 供历史查询
             }
         });
 

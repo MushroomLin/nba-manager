@@ -1895,6 +1895,12 @@ const App = (() => {
             });
             state.players = state.players.filter(p => !retiredIds.has(p.id));
         }
+        // 3.5 清理被淘汰为自由球员的球员：offseasonProgression 第五阶段把低 ovr 年轻球员
+        //     标记为 isFreeAgent=true, t=null，但它们仍留在 teamsPlayers 数组中，需要移除
+        //     修复 v4：原逻辑未清理，导致球队名单包含 t=null 的球员，数据不一致
+        state.teams.forEach(t => {
+            state.teamsPlayers[t.id] = state.teamsPlayers[t.id].filter(p => !p.isFreeAgent);
+        });
         // 4. 退役清理后，先修剪超额名单至 15 人，再补充替补填充球员至 14 人
         //    （历史存档可能存在名单 > 15 的脏数据，这里作为安全网统一收敛）
         //    修复：被裁球员不再从 state.players 删除，而是标记为自由球员保留在池中
