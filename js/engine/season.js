@@ -740,11 +740,11 @@ const SeasonEngine = (() => {
             // 15分+5板+5助 efficiency≈30 → royScore≈36+2.5+8=46.5；5分新秀 efficiency≈8 → royScore≈9.6+4+8=21.6
             royScore: c.efficiency * 1.2 + c.winRate * 5 + c.gp * 0.1,
         })).filter(c => {
-            // 修复：ROY 硬门槛——ppg >= 10 且 gp >= 30
-            // 真实 NBA ROY 最低得分约 10 PPG（2017 Brogdon 10.2）；原 ppg>=8 仍让 34% ROY <10 PPG
-            // 提至 10：与真实下限对齐，避免 8-9.9 PPG 低分新秀当选
-            // 若无新秀达标，本季 ROY 留空（好过选个低分新秀当 ROY）
-            return c.ppg >= 10 && c.gp >= 30;
+            // ROY 候选硬门槛——ppg >= 8 且 gp >= 20
+            // 真实 NBA ROY 最低约 10 PPG，但若某届新秀整体偏弱（玩家执教弱队时常见），
+            // 强制 10 分门槛会导致 ROY 空缺。放宽到 8 分 + gp≥20，保证 ROY 总能选出
+            // （即使数据偏低，也是该届新秀中最佳者，符合"最佳新秀"语义）
+            return c.ppg >= 8 && c.gp >= 20;
         }), "royScore");
         const sixManList = sorted(candidates.filter(c => c.isBench).filter(c => {
             // 修复：6MOY 硬门槛——ppg >= 12 且 gp >= 30，避免低分替补当选
@@ -772,11 +772,10 @@ const SeasonEngine = (() => {
             return true;
         }), "mipScore");
 
-        // 东西部 MVP：按 conf 分别评选
-        // 真实 NBA 有东西部全明星MVP，游戏中作为常规赛季东西部最佳球员奖项
-        // 评选标准：使用 mvpScore 但放宽硬门槛（仅排除 -1000 硬过滤的）
-        const eastMvpList = sorted(candidates.filter(c => c.conf === 'East' && c.mvpScore > -1000), "mvpScore");
-        const westMvpList = sorted(candidates.filter(c => c.conf === 'West' && c.mvpScore > -1000), "mvpScore");
+        // 东西部 MVP：改为在季后赛分区决赛结束后评选（基于季后赛数据）
+        // 此处不再评选，由 advancePlayoffs 在 round 3 结束时调用 computeConferenceMVP
+        const eastMvpList = [];
+        const westMvpList = [];
 
         // 最佳阵容：每阵 2后场(PG/SG) + 3前场(SF/PF/C)，限制中锋最多 1 人，避免一阵出现 3 中锋
         // 修复：原无绝对门槛，导致 ovr=80 ppg=9.2 球员入选一阵（S6 PG 位置人才断层时）
@@ -946,6 +945,67 @@ const SeasonEngine = (() => {
         };
     }
 
+    // ================================================================
+    //  东西部决赛 MVP 评选
+    //  规则：基于该联盟季后赛前 3 轮（首轮+半决赛+分区决赛）的球员累计数据，
+    //       从分区冠军（打进总决赛的球队）中选综合评分最高者。
+    //  roundResults: 前 3 轮所有系列赛结果数组 [{high, low, winner, gameStats}, ...]
+    //  confTeamIds: 该联盟进入季后赛的 8 支球队 id 集合（用于过滤本联盟球员）
+    //  champTeamId: 分区冠军球队 id（FMVP 只从冠军队选，符合"分区决赛MVP"语义）
+    // ================================================================
+    function computeConferenceMVP(roundResults, confTeamIds, champTeamId) {
+        if (!roundResults || roundResults.length === 0 || !champTeamId) return null;
+        const confSet = confTeamIds instanceof Set ? confTeamIds : new Set(confTeamIds);
+        // 聚合本联盟所有系列赛的球员数据
+        const playerStats = {};
+        roundResults.forEach(res => {
+            if (!res.gameStats) return;
+            res.gameStats.forEach(g => {
+                [g.home, g.away].forEach(side => {
+                    if (!side || !side.lines) return;
+                    // 仅统计本联盟球队的球员（避免总决赛跨联盟数据干扰）
+                    if (!confSet.has(side.teamId)) return;
+                    side.lines.forEach(line => {
+                        if (!line.player) return;
+                        const pid = line.player.id;
+                        if (!playerStats[pid]) {
+                            playerStats[pid] = {
+                                player: line.player, teamId: side.teamId,
+                                gp: 0, min: 0, pts: 0, reb: 0, ast: 0, stl: 0, blk: 0, tov: 0, fgm: 0, fga: 0, tpm: 0, tpa: 0,
+                            };
+                        }
+                        const s = playerStats[pid];
+                        s.gp++; s.min += line.min || 0; s.pts += line.pts || 0; s.reb += line.reb || 0;
+                        s.ast += line.ast || 0; s.stl += line.stl || 0; s.blk += line.blk || 0; s.tov += line.tov || 0;
+                        s.fgm += line.fgm || 0; s.fga += line.fga || 0; s.tpm += line.tpm || 0; s.tpa += line.tpa || 0;
+                    });
+                });
+            });
+        });
+        // 候选：仅从分区冠军球队中选（真实 NBA 分区决赛MVP 通常颁给冠军队最佳球员）
+        const candidates = Object.values(playerStats).filter(s => s.teamId === champTeamId);
+        if (candidates.length === 0) return null;
+        candidates.forEach(s => {
+            const gp = Math.max(1, s.gp);
+            const ppg = s.pts / gp, rpg = s.reb / gp, apg = s.ast / gp;
+            const spg = s.stl / gp, bpg = s.blk / gp, tpg = s.tov / gp;
+            const fgPct = s.fga > 0 ? s.fgm / s.fga : 0.45;
+            const efficiency = ppg + rpg * 1.2 + apg * 2.0 + spg * 2 + bpg * 1.5 - tpg * 1.2;
+            // 评分：效率为主 + 出场时间 + 命中率 + 系列赛场次加成（打得多说明球队走得远）
+            s.score = efficiency * 1.0 + s.min / gp * 0.3 + (fgPct - 0.45) * 30 + s.gp * 0.5;
+            s.ppg = ppg; s.rpg = rpg; s.apg = apg; s.spg = spg; s.bpg = bpg; s.fgPct = fgPct;
+        });
+        candidates.sort((a, b) => b.score - a.score);
+        const mvp = candidates[0];
+        return {
+            player: mvp.player, teamId: mvp.teamId, gp: mvp.gp,
+            ppg: +mvp.ppg.toFixed(1), rpg: +mvp.rpg.toFixed(1), apg: +mvp.apg.toFixed(1),
+            spg: +mvp.spg.toFixed(1), bpg: +mvp.bpg.toFixed(1),
+            fgPct: +mvp.fgPct.toFixed(3), min: +(mvp.min / Math.max(1, mvp.gp)).toFixed(1),
+            score: +mvp.score.toFixed(2),
+        };
+    }
+
     return {
         generateSchedule,
         computeStandings,
@@ -959,6 +1019,7 @@ const SeasonEngine = (() => {
         releasePlayer,
         computeAwards,
         computeFinalsMVP,
+        computeConferenceMVP,
         enforceHardCap,
     };
 })();

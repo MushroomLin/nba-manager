@@ -1339,8 +1339,7 @@ const App = (() => {
             c.player._awards.push({ year: awards.year, type: label });
         };
         tagAward(awards.mvp, 'MVP');
-        tagAward(awards.eastMvp, '东部MVP');
-        tagAward(awards.westMvp, '西部MVP');
+        // 东西部 MVP 改为在季后赛分区决赛结束后评选并打标记，此处不再处理
         tagAward(awards.dpoy, 'DPOY');
         tagAward(awards.roy, 'ROY');
         tagAward(awards.sixMan, '6MOY');
@@ -1427,6 +1426,9 @@ const App = (() => {
             east: SeasonEngine.setupPlayoffs(state.standings).east,
             west: SeasonEngine.setupPlayoffs(state.standings).west,
             eastResults: null, westResults: null,
+            // 累积本联盟前 3 轮所有系列赛结果，供分区决赛结束后评选东西部 MVP
+            eastAllRounds: [], westAllRounds: [],
+            eastConfMVP: null, westConfMVP: null,
             finalsResult: null,
             // 记录每支季后赛球队的出局轮次（1=首轮, 2=半决赛, 3=分区决赛, 4=总决赛, 5=冠军）
             // 在 advancePlayoffs 中随每轮模拟累积写入，供 startDraft 确定选秀顺位使用
@@ -1446,6 +1448,11 @@ const App = (() => {
             po.eastResults = SeasonEngine.simulatePlayoffRound(pairings.east, state.teamsPlayers);
             po.westResults = SeasonEngine.simulatePlayoffRound(pairings.west, state.teamsPlayers);
             const allRes = [...po.eastResults, ...po.westResults];
+            // 累积本联盟前 3 轮所有系列赛结果，供分区决赛结束后评选东西部 MVP
+            if (!po.eastAllRounds) po.eastAllRounds = [];
+            if (!po.westAllRounds) po.westAllRounds = [];
+            po.eastAllRounds.push(...po.eastResults);
+            po.westAllRounds.push(...po.westResults);
             // 记录本轮出局球队：败者 exitRound = po.round（1=首轮, 2=半决赛, 3=分区决赛）
             allRes.forEach(r => {
                 const loser = r.high.teamId === r.winner.teamId ? r.low : r.high;
@@ -1467,9 +1474,32 @@ const App = (() => {
                 po.westNext = SeasonEngine.nextRound(po.westResults);
                 po.round++;
             } else {
-                // 分区决赛结束 → 总决赛
+                // 分区决赛结束 → 评选东西部 MVP（基于本联盟前 3 轮季后赛数据，从分区冠军中选）
                 po.eastChamp = po.eastResults[0].winner;
                 po.westChamp = po.westResults[0].winner;
+                const eastTeamIds = po.east.map(p => [p.high.teamId, p.low.teamId]).flat();
+                const westTeamIds = po.west.map(p => [p.high.teamId, p.low.teamId]).flat();
+                po.eastConfMVP = SeasonEngine.computeConferenceMVP(po.eastAllRounds, eastTeamIds, po.eastChamp.teamId);
+                po.westConfMVP = SeasonEngine.computeConferenceMVP(po.westAllRounds, westTeamIds, po.westChamp.teamId);
+                // 同步到 awardsHistory 当前赛季奖项记录（覆盖原 null）
+                const curAwards = state.awardsHistory[state.awardsHistory.length - 1];
+                if (curAwards && curAwards.year === state.year) {
+                    curAwards.eastMvp = po.eastConfMVP;
+                    curAwards.westMvp = po.westConfMVP;
+                    // 给获奖球员打标记
+                    if (po.eastConfMVP && po.eastConfMVP.player) {
+                        if (!po.eastConfMVP.player._awards) po.eastConfMVP.player._awards = [];
+                        po.eastConfMVP.player._awards.push({ year: state.year, type: '东部MVP' });
+                    }
+                    if (po.westConfMVP && po.westConfMVP.player) {
+                        if (!po.westConfMVP.player._awards) po.westConfMVP.player._awards = [];
+                        po.westConfMVP.player._awards.push({ year: state.year, type: '西部MVP' });
+                    }
+                }
+                // 弹窗展示东西部 MVP
+                if (!fast && (po.eastConfMVP || po.westConfMVP)) {
+                    showConferenceMvpModal(po.eastConfMVP, po.westConfMVP, roundName);
+                }
                 po.finalsPair = { high: po.eastChamp, low: po.westChamp }; // 主场优势按战绩，简化
                 // 总决赛主场优势：战绩好的为 high
                 const eR = state.records[po.eastChamp.teamId];
@@ -1536,6 +1566,33 @@ const App = (() => {
             <div class="modal-title">${title}</div>
             <div class="table-wrap"><table><thead><tr><th>对阵</th><th class="num">比分</th><th>胜者</th></tr></thead><tbody>${rows}</tbody></table></div>
             <div class="modal-actions"><button class="btn btn-primary" onclick="App.closeModal()">继续</button></div>
+        `);
+    }
+
+    // 东西部决赛 MVP 弹窗：分区决赛结束后展示
+    function showConferenceMvpModal(eastMvp, westMvp, roundName) {
+        const myId = state.manager.teamId;
+        const fmtConfMvp = (c, label) => {
+            if (!c) return `<div class="award-row"><div class="award-label">${label}</div><div class="award-winner"><span class="muted">无</span></div></div>`;
+            const mine = c.teamId === myId;
+            return `<div class="award-row ${mine?'mine':''}">
+                <div class="award-label">${label}</div>
+                <div class="award-winner">
+                    ${c.player.n} <span class="muted" style="font-size:12px">(${teamAbbr(c.teamId)} · ${c.player.p})</span>
+                    ${mine ? ' <span class="tag tag-rookie">我的球员</span>' : ''}
+                    <div class="muted" style="font-size:11px;margin-top:2px">
+                        季后赛 ${c.gp} 场 · <b>${c.ppg}</b> 分 · <b>${c.rpg}</b> 板 · <b>${c.apg}</b> 助 ·
+                        <b>${c.spg}</b> 断 · <b>${c.bpg}</b> 帽 · 命中率 <b>${(c.fgPct*100).toFixed(1)}%</b> · 均 ${c.min} 分钟
+                    </div>
+                </div>
+            </div>`;
+        };
+        showModal(`
+            <div class="modal-title">🏆 ${roundName}结束 · 东西部决赛 MVP</div>
+            <div class="card-title">分区决赛最有价值球员</div>
+            ${fmtConfMvp(eastMvp, '东部决赛 MVP')}
+            ${fmtConfMvp(westMvp, '西部决赛 MVP')}
+            <div class="modal-actions"><button class="btn btn-primary" onclick="App.closeModal()">进入总决赛</button></div>
         `);
     }
 
