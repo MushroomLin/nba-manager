@@ -77,7 +77,11 @@ const App = (() => {
         autoSave();
         // 后台异步加载 NBA 真实球员历史数据（不阻塞 UI，加载完自动刷新当前球员详情）
         NBAStats.ensureLoaded().then(ok => {
-            if (ok && currentView === 'roster') renderAll();
+            if (!ok) return;
+            // 用真实 NBA 上赛季数据预填 playerHistory，让第一赛季也能评选 MIP
+            // （否则第一赛季所有球员无历史记录，MIP 必然空缺）
+            seedInitialPlayerHistory();
+            if (currentView === 'roster') renderAll();
         });
         toast(`欢迎，${managerName}！你已执教 ${teamName(teamId)}`, "success");
     }
@@ -1994,6 +1998,63 @@ const App = (() => {
                 });
             }
         });
+    }
+
+    // 用真实 NBA 历史数据预填第一赛季的 playerHistory
+    // 解决：游戏起始 state.year=2026，第一赛季评选 MIP 时所有球员 playerHistory 为空 → MIP 必空缺
+    // 方案：取真实 NBA year=(state.year-1) 的赛季数据作为"上赛季"基准，让 MIP 可基于真实数据评选
+    // ovr 字段无真实数据，用球员当前 ovr（ovrDelta=0，但 MIP 评分仍可通过 dataImprove 体现）
+    function seedInitialPlayerHistory() {
+        if (!state || state.playerHistory === undefined) return;
+        // 仅在 playerHistory 完全空时预填（避免覆盖已有存档数据）
+        if (Object.keys(state.playerHistory).length > 0) return;
+        const prevYear = state.year - 1;
+        const nameMap = NBAStats.getNameMap();
+        const stats = NBAStats.getStats();
+        let seeded = 0;
+        state.players.forEach(p => {
+            const nbaId = nameMap[p.n];
+            if (!nbaId) return;
+            const nbaPlayer = stats[String(nbaId)];
+            if (!nbaPlayer || !nbaPlayer.seasons || nbaPlayer.seasons.length === 0) return;
+            // 优先取 year=prevYear 的赛季；若无则取最近一个 < state.year 的赛季
+            let season = nbaPlayer.seasons.find(s => s.year === prevYear);
+            if (!season) {
+                const past = nbaPlayer.seasons.filter(s => s.year < state.year);
+                if (past.length === 0) return;
+                season = past[past.length - 1];
+            }
+            state.playerHistory[p.id] = [{
+                year: prevYear,
+                ovr: p.o, // 真实数据无 ovr，用当前 ovr（ovrDelta=0，MIP 靠 dataImprove 评分）
+                teamId: p.t,
+                age: season.age || p.a,
+                gp: season.gp || 0,
+                min: season.min || 0,
+                pts: season.pts || 0,
+                reb: season.reb || 0,
+                ast: season.ast || 0,
+                stl: season.stl || 0,
+                blk: season.blk || 0,
+                tov: season.tov || 0,
+                pf: season.pf || 0,
+                fgm: season.fgm || 0,
+                fga: season.fga || 0,
+                tpm: season.fg3m || 0,
+                tpa: season.fg3a || 0,
+                ftm: season.ftm || 0,
+                fta: season.fta || 0,
+                oreb: season.oreb || 0,
+                fg_pct: season.fg_pct || 0,
+                fg3_pct: season.fg3_pct || 0,
+                ft_pct: season.ft_pct || 0,
+            }];
+            seeded++;
+        });
+        if (seeded > 0) {
+            autoSave();
+            console.log(`[playerHistory] 已用真实 NBA 数据预填 ${seeded} 名球员的上赛季记录`);
+        }
     }
 
     // ============ 模态框 ============
