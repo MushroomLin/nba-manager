@@ -177,8 +177,123 @@ const App = (() => {
             if (!toRelease) break;
             const idx = roster.findIndex(p => p.id === toRelease.id);
             if (idx >= 0) roster.splice(idx, 1);
-            state.players = state.players.filter(p => p.id !== toRelease.id);
+            // filler 球员直接删除（凑数用，不是真实球员，不进自由市场）
+            // 真实球员标记为自由球员保留在 state.players，等选秀结束时进入自由市场
+            // 用户要求：自由球员应来自各球队裁员，而非纯随机生成
+            if (toRelease.isFiller) {
+                state.players = state.players.filter(p => p.id !== toRelease.id);
+            } else {
+                toRelease.isFreeAgent = true;
+                toRelease.t = null;
+                // 重新进入自由市场，滞留计时从 0 开始
+                toRelease.yearsInFreeAgency = 0;
+            }
         }
+    }
+
+    // AI 球队从自由市场签约补强：名单 < 14 的 AI 球队优先签约自由球员
+    // 修复：自由球员池需要流动，否则无限膨胀；AI 球队名单不足时优先签约自由球员而非生成 filler
+    // 增强：AI 球队若有低能力 filler(ovr<66)，且自由市场有更高能力球员，会签约替换（消耗自由市场）
+    // 用户要求：自由球员应来自各球队裁员/新秀离队，且能被签约流动
+    function aiSignFreeAgents(state) {
+        let signed = 0;
+        const myId = state.manager.teamId;
+        // 收集所有可用自由球员（state.freeAgents + state.players 中 isFreeAgent=true 的）
+        const availableFas = [...state.freeAgents];
+        const existingIds = new Set(state.freeAgents.map(p => p.id));
+        state.players.forEach(p => {
+            if (p.isFreeAgent && !p.isRetired && p.t === null && !existingIds.has(p.id)) {
+                availableFas.push(p);
+                existingIds.add(p.id);
+            }
+        });
+        if (availableFas.length === 0) return { signed: 0 };
+        // 按能力降序排序（高能力先被签约）
+        availableFas.sort((a, b) => b.o - a.o);
+        const cap = window.SALARY_CAP;
+
+        function trySign(teamId, roster, target) {
+            const currentSal = roster.reduce((s, p) => s + (p.sal || 0), 0);
+            const remainingSal = cap != null ? cap - currentSal : Infinity;
+            // 薪资可负担 或 底薪特例(<=2M)
+            if ((target.sal || 0) > remainingSal && (target.sal || 0) > 2) return false;
+            // 签约
+            target.t = teamId;
+            target.isFreeAgent = false;
+            // 重置自由市场滞留计时
+            target.yearsInFreeAgency = 0;
+            roster.push(target);
+            // 从 state.freeAgents 移除（如果在）
+            const faIdx = state.freeAgents.findIndex(p => p.id === target.id);
+            if (faIdx >= 0) state.freeAgents.splice(faIdx, 1);
+            signed++;
+            return true;
+        }
+
+        state.teams.forEach(t => {
+            if (t.id === myId) return; // 玩家球队由玩家自己签约
+            const roster = state.teamsPlayers[t.id];
+            // 1. 名单不足 14 人：签约补足
+            while (roster.length < 14) {
+                let target = null;
+                for (const fa of availableFas) {
+                    if (fa.t !== null || fa.isRetired) continue;
+                    target = fa;
+                    break;
+                }
+                if (!target) break;
+                if (!trySign(t.id, roster, target)) break;
+            }
+            // 2. 替换低能力球员：filler 优先释放，其次低 ovr 真实球员（>28岁边缘轮换）
+            //    修复：原逻辑仅替换 ovr<66 的 filler 且每队限 2 人，导致 AI 签约率过低
+            //    （10 季仅签约 22 人），自由球员池从 10 膨胀到 373。
+            //    新逻辑：每队最多替换 4 人，覆盖 filler 和 28+ 岁低 ovr 真实球员
+            let replaced = 0;
+            const MAX_REPLACE = 4;
+            for (let i = 0; i < roster.length && replaced < MAX_REPLACE; i++) {
+                const p = roster[i];
+                // 候选释放对象：filler，或 28+ 岁 ovr<68 的真实球员（边缘老将）
+                const isReplaceable = p.isFiller
+                    || (!p.isFiller && p.a >= 28 && p.o < 68 && (p.yrsInLeague || 5) > 2);
+                if (!isReplaceable) continue;
+                if (p.o >= 70) continue; // 已达轮换水平不替换
+                // 找一个明显更强的自由球员（ovr 至少高 2）
+                let target = null;
+                for (const fa of availableFas) {
+                    if (fa.t !== null || fa.isRetired) continue;
+                    if (fa.o > p.o + 2) { target = fa; break; }
+                }
+                if (!target) continue;
+                // 释放候选：filler 直接删除，真实球员标记为自由球员
+                roster.splice(i, 1);
+                if (p.isFiller) {
+                    state.players = state.players.filter(x => x.id !== p.id);
+                } else {
+                    p.isFreeAgent = true;
+                    p.t = null;
+                    p.yearsInFreeAgency = 0;
+                    if (!state.freeAgents.find(x => x.id === p.id)) {
+                        state.freeAgents.push(p);
+                    }
+                    if (!availableFas.find(x => x.id === p.id)) {
+                        availableFas.push(p);
+                    }
+                }
+                i--;
+                if (!trySign(t.id, roster, target)) {
+                    // 签约失败（薪资不足），把释放对象放回
+                    roster.push(p);
+                    if (p.isFiller) state.players.push(p);
+                    else {
+                        p.isFreeAgent = false;
+                        p.t = t.id;
+                    }
+                    break;
+                }
+                replaced++;
+            }
+        });
+        return { signed };
     }
 
     // ============ 顶部状态栏 ============
@@ -405,23 +520,33 @@ const App = (() => {
             return;
         }
         const myId = state.manager.teamId;
+        // 按年份分组：每个赛季一行，含 MVP/东西部MVP/FMVP/DPOY/ROY/6MOY/MIP/冠军
         const rows = hist.slice().reverse().map(a => {
-            const mvp = a.mvp ? `${a.mvp.player.n} (${teamAbbr(a.mvp.teamId)})` : '-';
-            const dpoy = a.dpoy ? `${a.dpoy.player.n} (${teamAbbr(a.dpoy.teamId)})` : '-';
-            const roy = a.roy ? `${a.roy.player.n} (${teamAbbr(a.roy.teamId)})` : '-';
-            const sixMan = a.sixMan ? `${a.sixMan.player.n} (${teamAbbr(a.sixMan.teamId)})` : '-';
-            const mip = a.mip ? `${a.mip.player.n} (${teamAbbr(a.mip.teamId)})` : '-';
+            const fmt = (c) => c ? `${c.player.n}<br><span class="muted" style="font-size:11px">${teamAbbr(c.teamId)} ${c.ppg.toFixed(1)}分</span>` : '-';
+            const mvp = a.mvp ? `${a.mvp.player.n}<br><span class="muted" style="font-size:11px">${teamAbbr(a.mvp.teamId)} ${a.mvp.ppg.toFixed(1)}分</span>` : '-';
+            const eMvp = a.eastMvp ? `${a.eastMvp.player.n}<br><span class="muted" style="font-size:11px">${teamAbbr(a.eastMvp.teamId)} ${a.eastMvp.ppg.toFixed(1)}分</span>` : '-';
+            const wMvp = a.westMvp ? `${a.westMvp.player.n}<br><span class="muted" style="font-size:11px">${teamAbbr(a.westMvp.teamId)} ${a.westMvp.ppg.toFixed(1)}分</span>` : '-';
+            const dpoy = a.dpoy ? `${a.dpoy.player.n}<br><span class="muted" style="font-size:11px">${teamAbbr(a.dpoy.teamId)}</span>` : '-';
+            const roy = a.roy ? `${a.roy.player.n}<br><span class="muted" style="font-size:11px">${teamAbbr(a.roy.teamId)} ${a.roy.ppg.toFixed(1)}分</span>` : '-';
+            const sixMan = a.sixMan ? `${a.sixMan.player.n}<br><span class="muted" style="font-size:11px">${teamAbbr(a.sixMan.teamId)} ${a.sixMan.ppg.toFixed(1)}分</span>` : '-';
+            const mip = a.mip ? `${a.mip.player.n}<br><span class="muted" style="font-size:11px">${teamAbbr(a.mip.teamId)} +${a.mip.ppgDelta.toFixed(1)}分</span>` : '-';
             const champ = state.champions.find(c => c.year === a.year);
-            const champStr = champ ? `${champ.name}` : '-';
+            const champStr = champ ? `${champ.name}<br><span class="muted" style="font-size:11px">${champ.finalsScore||'-'}</span>` : '-';
+            const fmvpStr = (champ && champ.finalsMVP) ? `${champ.finalsMVP.n}<br><span class="muted" style="font-size:11px">${champ.finalsMVP.ppg.toFixed(1)}分 ${champ.finalsMVP.rpg.toFixed(1)}板 ${champ.finalsMVP.apg.toFixed(1)}助</span>` : '-';
             return `<tr>
                 <td class="num"><b>${a.year}</b></td>
-                <td>${mvp}</td><td>${dpoy}</td><td>${roy}</td><td>${sixMan}</td><td>${mip}</td>
+                <td>${mvp}</td><td>${eMvp}</td><td>${wMvp}</td>
+                <td>${fmvpStr}</td>
+                <td>${dpoy}</td><td>${roy}</td><td>${sixMan}</td><td>${mip}</td>
                 <td>${champStr}</td>
             </tr>`;
         }).join("");
         showModal(`
             <div class="modal-title">🏆 奖项历史</div>
-            <div class="table-wrap"><table><thead><tr><th class="num">赛季</th><th>MVP</th><th>DPOY</th><th>ROY</th><th>6MOY</th><th>MIP</th><th>冠军</th></tr></thead><tbody>${rows}</tbody></table></div>
+            <div class="table-wrap"><table style="font-size:12px"><thead><tr>
+                <th class="num">赛季</th><th>MVP</th><th>东部MVP</th><th>西部MVP</th><th>FMVP</th>
+                <th>DPOY</th><th>ROY</th><th>6MOY</th><th>MIP</th><th>冠军</th>
+            </tr></thead><tbody>${rows}</tbody></table></div>
             <div class="modal-actions"><button class="btn btn-primary" onclick="App.closeModal()">关闭</button></div>
         `);
     }
@@ -1210,6 +1335,8 @@ const App = (() => {
             c.player._awards.push({ year: awards.year, type: label });
         };
         tagAward(awards.mvp, 'MVP');
+        tagAward(awards.eastMvp, '东部MVP');
+        tagAward(awards.westMvp, '西部MVP');
         tagAward(awards.dpoy, 'DPOY');
         tagAward(awards.roy, 'ROY');
         tagAward(awards.sixMan, '6MOY');
@@ -1231,11 +1358,18 @@ const App = (() => {
     function showAwardsModal(awards) {
         const myId = state.manager.teamId;
         const fmt = (c) => c ? `${c.player.n} <span class="muted" style="font-size:12px">(${teamAbbr(c.teamId)})</span> <span class="muted" style="font-size:11px">${c.ppg.toFixed(1)}分 ${c.rpg.toFixed(1)}板 ${c.apg.toFixed(1)}助</span>` : '<span class="muted">无</span>';
+        // MIP 展示带提升数据：显示本季数据 + 较上赛季提升
+        const fmtMip = (c) => c ? `${c.player.n} <span class="muted" style="font-size:12px">(${teamAbbr(c.teamId)})</span> <span class="muted" style="font-size:11px">${c.ppg.toFixed(1)}分 ${c.rpg.toFixed(1)}板 ${c.apg.toFixed(1)}助</span> <span style="font-size:11px;color:var(--success)">较上赛季 +${c.ppgDelta.toFixed(1)}分 +${c.rpgDelta.toFixed(1)}板 +${c.apgDelta.toFixed(1)}助 / ovr ${c.lastPpg!=null?c.ovrDelta+'+':''}</span>` : '<span class="muted">无</span>';
         const isMine = (c) => c && c.teamId === myId;
         const winnerRow = (label, c) => `
             <div class="award-row ${isMine(c) ? 'mine' : ''}">
                 <div class="award-label">${label}</div>
                 <div class="award-winner">${fmt(c)}${isMine(c) ? ' <span class="tag tag-rookie">我的球员</span>' : ''}</div>
+            </div>`;
+        const winnerRowCustom = (label, c, fmtFn) => `
+            <div class="award-row ${isMine(c) ? 'mine' : ''}">
+                <div class="award-label">${label}</div>
+                <div class="award-winner">${fmtFn(c)}${isMine(c) ? ' <span class="tag tag-rookie">我的球员</span>' : ''}</div>
             </div>`;
         const listRow = (c, i) => `
             <tr class="${isMine(c) ? 'me-row' : ''}">
@@ -1258,10 +1392,12 @@ const App = (() => {
             <div class="modal-title">🏆 ${awards.year}-${awards.year+1} 赛季奖项</div>
             <div class="card-title">个人奖项</div>
             ${winnerRow('最有价值球员 MVP', awards.mvp)}
+            ${winnerRow('东部最有价值球员', awards.eastMvp)}
+            ${winnerRow('西部最有价值球员', awards.westMvp)}
             ${winnerRow('最佳防守球员 DPOY', awards.dpoy)}
             ${winnerRow('最佳新秀 ROY', awards.roy)}
             ${winnerRow('最佳第六人 6MOY', awards.sixMan)}
-            ${winnerRow('进步最快球员 MIP', awards.mip)}
+            ${winnerRowCustom('进步最快球员 MIP', awards.mip, fmtMip)}
             <div class="card-title mt-20">最佳阵容</div>
             ${teamRow(awards.allNBAFirstDetail, '一阵')}
             ${teamRow(awards.allNBASecondDetail, '二阵')}
@@ -1347,9 +1483,29 @@ const App = (() => {
             const loser = po.finalsPair.high.teamId === champ.teamId ? po.finalsPair.low : po.finalsPair.high;
             po.exits[loser.teamId] = 4; // 总决赛败者
             po.exits[champ.teamId] = 5; // 冠军
-            state.champions.push({ year: state.year, team: champ.teamId, name: champ.name });
+            // 评选总决赛 MVP（FMVP）：基于总决赛每场双方球员数据，冠军球队中综合评分最高者当选
+            // 真实 NBA 规则：FMVP 几乎全部来自冠军球队（1969 Jerry West 是唯一败方 FMVP）
+            const fmvp = SeasonEngine.computeFinalsMVP(
+                po.finalsResult,
+                po.finalsPair.high.teamId,
+                po.finalsPair.low.teamId,
+                champ.teamId
+            );
+            po.finalsMVP = fmvp;
+            // 记录冠军和 FMVP 到历史
+            state.champions.push({
+                year: state.year, team: champ.teamId, name: champ.name,
+                finalsMVP: fmvp ? { id: fmvp.player.id, n: fmvp.player.n, ppg: fmvp.ppg, rpg: fmvp.rpg, apg: fmvp.apg } : null,
+                finalsScore: `${po.finalsResult.highWins}-${po.finalsResult.lowWins}`,
+                loserTeamId: loser.teamId,
+            });
+            // 给 FMVP 球员追加奖项标记，便于球员详情展示
+            if (fmvp && fmvp.player) {
+                if (!fmvp.player._awards) fmvp.player._awards = [];
+                fmvp.player._awards.push({ year: state.year, type: 'FMVP' });
+            }
             const myWon = champ.teamId === myId;
-            showFinalsModal(po.finalsResult, myWon);
+            showFinalsModal(po.finalsResult, myWon, fmvp);
             state.phase = "offseason";
         }
         renderAll();
@@ -1513,9 +1669,48 @@ const App = (() => {
         if (state.draftPick >= 60) {
             // 选秀结束
             state.phase = "freeAgency";
-            // 补充自由市场
-            state.freeAgents = SeasonEngine.generateFreeAgents(15);
-            toast("选秀结束，自由市场开放", "success");
+            // 修复：自由市场主来源 = 落选新秀 + 硬帽释放 + 名单裁减 + makeRoomForRookie 释放
+            // 用户要求：自由球员应来自各球队裁员/新秀离队，而非纯随机生成
+            // 这些球员已在 state.players 中标记 isFreeAgent=true，统一收集到 state.freeAgents
+            const existingFaIds = new Set(state.freeAgents.map(p => p.id));
+            const collected = [];
+            // 1. 落选新秀（rookieClass 中 t===null 的，约 10 个）
+            if (state.rookieClass) {
+                state.rookieClass.forEach(r => {
+                    if (r.t === null && !existingFaIds.has(r.id)) {
+                        r.isFreeAgent = true;
+                        r.t = null;
+                        // 初次进入自由市场，滞留计时从 0 开始
+                        r.yearsInFreeAgency = 0;
+                        collected.push(r);
+                        existingFaIds.add(r.id);
+                        // 落选新秀也要加入 state.players 保持数据一致性
+                        if (!state.players.find(p => p.id === r.id)) {
+                            state.players.push(r);
+                        }
+                    }
+                });
+            }
+            // 2. state.players 中标记 isFreeAgent=true 但未在 state.freeAgents 中的球员
+            //    来源：enforceHardCap、offseason roster trim、makeRoomForRookie
+            state.players.forEach(p => {
+                if (p.isFreeAgent && !p.isRetired && p.t === null && !existingFaIds.has(p.id)) {
+                    collected.push(p);
+                    existingFaIds.add(p.id);
+                }
+            });
+            state.freeAgents.push(...collected);
+            // 3. 仅在数量严重不足时少量补充随机 FA（避免自由市场完全空荡）
+            //    用户要求：自由球员应来自各球队裁员/新秀离队，而非纯随机生成
+            //    因此仅在自由市场极度不足（<8人）时补充少量，正常情况下靠真实来源维持
+            const MIN_FA = 8;
+            if (state.freeAgents.length < MIN_FA) {
+                const supplement = SeasonEngine.generateFreeAgents(MIN_FA - state.freeAgents.length);
+                state.freeAgents.push(...supplement);
+            }
+            const undrafted = collected.filter(p => p.isRookie).length;
+            const released = collected.length - undrafted;
+            toast(`选秀结束，自由市场开放（${state.freeAgents.length} 人，新增落选 ${undrafted} + 被裁 ${released}）`, "success");
             renderAll();
             return;
         }
@@ -1616,6 +1811,16 @@ const App = (() => {
         //    修复 MIP bug：原代码在 offseasonProgression 之后调用 recordPlayerHistory，
         //    导致 playerHistory 记录的是成长后的 ovr，ovrDelta 永远为 0，MIP 无人获奖。
         recordPlayerHistory();
+        // 1.5 老化现有自由球员池：年龄+1、能力衰退、高龄退役
+        //     修复：自由球员不再每赛季全量重置，而是持续存在于市场中直到被签约或退役
+        if (state.freeAgents && state.freeAgents.length > 0) {
+            const faResult = SeasonEngine.ageFreeAgents(state);
+            // 从 state.players 中移除退役的自由球员
+            if (faResult.retired > 0 && state.players) {
+                const retiredFaIds = new Set(state.freeAgents.filter(p => p.isRetired).map(p => p.id));
+                state.players = state.players.filter(p => !retiredFaIds.has(p.id));
+            }
+        }
         // 2. 球员成长与老化（含退役评估）
         const progression = SeasonEngine.offseasonProgression(state.players);
         const changes = progression.changes;
@@ -1630,6 +1835,8 @@ const App = (() => {
         }
         // 4. 退役清理后，先修剪超额名单至 15 人，再补充替补填充球员至 14 人
         //    （历史存档可能存在名单 > 15 的脏数据，这里作为安全网统一收敛）
+        //    修复：被裁球员不再从 state.players 删除，而是标记为自由球员保留在池中
+        //    用户要求：自由球员应来自各球队裁员，而非纯随机生成
         const offseasonReleasedIds = new Set();
         state.teams.forEach(t => {
             const roster = state.teamsPlayers[t.id];
@@ -1645,23 +1852,43 @@ const App = (() => {
                 if (!toRelease) break;
                 const idx = roster.findIndex(p => p.id === toRelease.id);
                 if (idx >= 0) roster.splice(idx, 1);
-                offseasonReleasedIds.add(toRelease.id);
+                // filler 直接删除，真实球员标记为自由球员保留
+                if (toRelease.isFiller) {
+                    offseasonReleasedIds.add(toRelease.id);
+                } else {
+                    toRelease.isFreeAgent = true;
+                    toRelease.t = null;
+                    // 重新进入自由市场，滞留计时从 0 开始
+                    toRelease.yearsInFreeAgency = 0;
+                }
             }
         });
+        // 删除被释放的 filler 球员
         if (offseasonReleasedIds.size > 0) {
             state.players = state.players.filter(p => !offseasonReleasedIds.has(p.id));
         }
+        // 真实释放球员保留在 state.players 中，等选秀结束时统一收集进 state.freeAgents
         // 4.5 强制执行硬帽：超帽球队释放最低性价比球员直至合规
         //     修复硬帽失效 bug：原 validateSalary 只在交易瞬间检查，但 offseasonProgression 中
         //     adjustSalaryByAge 会重算薪资（老将跨年折扣恢复），可能导致已合规球队再次超帽
         const hardCapReleased = SeasonEngine.enforceHardCap(state);
         if (hardCapReleased.length > 0) {
+            // filler 球员直接从 state.players 删除，真实球员保留为自由球员
+            const fillerReleasedIds = new Set(hardCapReleased.filter(p => p.isFiller).map(p => p.id));
+            if (fillerReleasedIds.size > 0) {
+                state.players = state.players.filter(p => !fillerReleasedIds.has(p.id));
+            }
             const notable = hardCapReleased.filter(p => !p.isFiller && p.o >= 75).slice(0, 3);
             if (notable.length) {
                 const names = notable.map(p => `${p.n}($${p.sal}M)`).join('、');
                 setTimeout(() => toast(`💰 薪资瘦身: ${names} 等共 ${hardCapReleased.length} 人因硬帽被释放`, ""), 600);
             }
         }
+        // 4.6 AI 球队从自由市场签约补强（在 filler 补足前）
+        //     修复：自由球员池需要流动，否则无限膨胀；AI 球队名单不足时优先签约自由球员
+        //     用户要求：自由球员应来自各球队裁员/新秀离队，且能被签约流动
+        aiSignFreeAgents(state);
+        // 4.7 仍然不足 14 人的球队，用 filler 补足
         state.teams.forEach(t => {
             while (state.teamsPlayers[t.id].length < 14) {
                 const fp = generateBenchPlayer(t.id, Date.now() % 1000 + state.teamsPlayers[t.id].length);
@@ -1865,13 +2092,33 @@ const App = (() => {
         `);
     }
 
-    function showFinalsModal(res, myWon) {
+    function showFinalsModal(res, myWon, fmvp) {
         const champ = res.winner;
         const myId = state.manager.teamId;
         const champId = champ.teamId;
         const loserId = res.high.teamId === champId ? res.low.teamId : res.high.teamId;
         const champWins = res.high.teamId === champId ? res.highWins : res.lowWins;
         const loserWins = res.high.teamId === champId ? res.lowWins : res.highWins;
+        // FMVP 信息展示（含总决赛系列赛数据）
+        const fmvpHtml = fmvp ? `
+            <div style="margin-top:18px;padding:14px 16px;background:rgba(243,156,18,0.12);border:1px solid var(--gold);border-radius:10px">
+                <div style="font-size:13px;color:var(--gold);font-weight:700;margin-bottom:6px">🏆 总决赛最有价值球员 FMVP</div>
+                <div style="display:flex;align-items:center;gap:12px">
+                    <div style="font-size:18px;font-weight:800">${fmvp.player.n}</div>
+                    <span class="muted" style="font-size:13px">${teamAbbr(fmvp.teamId)} · ${fmvp.player.p}</span>
+                    ${fmvp.teamId === myId ? '<span class="tag tag-rookie">我的球员</span>' : ''}
+                </div>
+                <div style="margin-top:6px;font-size:13px;color:var(--text)">
+                    <b>${fmvp.ppg.toFixed(1)}</b> 分 ·
+                    <b>${fmvp.rpg.toFixed(1)}</b> 板 ·
+                    <b>${fmvp.apg.toFixed(1)}</b> 助 ·
+                    <b>${fmvp.spg.toFixed(1)}</b> 断 ·
+                    <b>${fmvp.bpg.toFixed(1)}</b> 帽 ·
+                    命中率 <b>${(fmvp.fgPct*100).toFixed(1)}%</b> ·
+                    ${fmvp.gp} 场 ·
+                    均 <b>${fmvp.min.toFixed(1)}</b> 分钟
+                </div>
+            </div>` : '';
         showModal(`
             <div class="modal-title" style="color:${myWon?'var(--gold)':'var(--accent-light)'};font-size:24px;text-align:center">
                 ${myWon?'🏆 你赢得了 NBA 总冠军!':'赛季结束'}</div>
@@ -1892,6 +2139,7 @@ const App = (() => {
                     ${myWon ? `恭喜 ${state.manager.name} 率领 ${teamName(myId)} 夺冠!` : `${champ.name} 夺得 ${state.year} 年总冠军`}
                 </div>
             </div>
+            ${fmvpHtml}
             <div class="modal-actions"><button class="btn btn-primary" onclick="App.closeModal()">进入休赛期</button></div>
         `);
     }
@@ -2007,8 +2255,13 @@ const App = (() => {
         const res = SeasonEngine.signFreeAgent(myPlayers, player);
         if (res.ok) {
             player.t = myId;
+            player.isFreeAgent = false;
             state.freeAgents.splice(idx, 1);
-            state.players.push(player);
+            // 修复：来自 releasePlayer/落选新秀/被裁球员已在 state.players 中，避免重复 push
+            // 仅 generateFreeAgents 生成的纯随机 FA 不在 state.players，需要 push
+            if (!state.players.find(p => p.id === player.id)) {
+                state.players.push(player);
+            }
             toast(`签约 ${player.n} (${player.o} OVR)`, "success");
             renderAll();
             autoSave();
@@ -2176,7 +2429,7 @@ const App = (() => {
             const inOldNBA = (a.allNBA || []).includes(pid);
             const inOldDef = (a.allDefensive || []).includes(pid);
             const inOldRook = (a.allRookie || []).includes(pid);
-            return (a.mvp && a.mvp.player.id === pid) || (a.dpoy && a.dpoy.player.id === pid) || (a.roy && a.roy.player.id === pid)
+            return (a.mvp && a.mvp.player.id === pid) || (a.eastMvp && a.eastMvp.player.id === pid) || (a.westMvp && a.westMvp.player.id === pid) || (a.dpoy && a.dpoy.player.id === pid) || (a.roy && a.roy.player.id === pid)
                 || (a.sixMan && a.sixMan.player.id === pid) || (a.mip && a.mip.player.id === pid)
                 || inFirst || inSecond || inThird || inDefF || inDefS || inRookF || inRookS
                 || inOldNBA || inOldDef || inOldRook;
@@ -2184,10 +2437,15 @@ const App = (() => {
         const awardBadges = awards.map(a => {
             const items = [];
             if (a.mvp && a.mvp.player.id === pid) items.push('MVP');
+            if (a.eastMvp && a.eastMvp.player.id === pid) items.push('东部MVP');
+            if (a.westMvp && a.westMvp.player.id === pid) items.push('西部MVP');
             if (a.dpoy && a.dpoy.player.id === pid) items.push('DPOY');
             if (a.roy && a.roy.player.id === pid) items.push('ROY');
             if (a.sixMan && a.sixMan.player.id === pid) items.push('6MOY');
             if (a.mip && a.mip.player.id === pid) items.push('MIP');
+            // 总决赛 MVP：从 champions 历史中查找
+            const champ = state.champions.find(c => c.year === a.year && c.finalsMVP && c.finalsMVP.id === pid);
+            if (champ) items.push('FMVP');
             // 最佳阵容：标注阵次
             if ((a.allNBAFirst || []).includes(pid)) items.push('一阵');
             else if ((a.allNBASecond || []).includes(pid)) items.push('二阵');

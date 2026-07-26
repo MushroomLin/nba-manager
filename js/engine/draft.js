@@ -25,13 +25,29 @@ const DraftEngine = (() => {
         const usedNames = new Set();
         // 全联盟现役球员姓名，避免新秀与老将重名
         const usedRookieIds = new Set();
+        // NBA 球员名字组件黑名单（名 + 姓 各自拆分）
+        // 修复：原代码只检查全名匹配，导致 "詹姆斯·史密斯" 这种组合能通过
+        // （全名不匹配 "勒布朗·詹姆斯"，但名 "詹姆斯" 正是 LeBron 的姓）
+        // 现在拆分 NBA 球员姓名，把每个组件加入黑名单，名或姓任一匹配即拒绝
+        const nbaNameParts = new Set();
         if (window.PLAYERS_DATA) {
-            window.PLAYERS_DATA.forEach(p => usedRookieIds.add(p.n));
+            window.PLAYERS_DATA.forEach(p => {
+                usedRookieIds.add(p.n);
+                if (typeof p.n === 'string') {
+                    const parts = p.n.split('·');
+                    parts.forEach(part => {
+                        const trimmed = part.trim();
+                        if (trimmed) nbaNameParts.add(trimmed);
+                    });
+                }
+            });
         }
         function genName() {
-            for (let attempt = 0; attempt < 50; attempt++) {
+            for (let attempt = 0; attempt < 300; attempt++) {
                 const fn = proto.firstNames[Math.floor(Math.random() * proto.firstNames.length)];
                 const ln = proto.lastNames[Math.floor(Math.random() * proto.lastNames.length)];
+                // 拒绝：名或姓与任何 NBA 球员的名/姓组件相同
+                if (nbaNameParts.has(fn) || nbaNameParts.has(ln)) continue;
                 const full = `${fn}·${ln}`;
                 if (!usedNames.has(full) && !usedRookieIds.has(full) && !allTimeRookieNames.has(full)) {
                     usedNames.add(full);
@@ -39,9 +55,11 @@ const DraftEngine = (() => {
                     return full;
                 }
             }
-            // 极端情况：50 次都撞名，加随机后缀
-            const fn = proto.firstNames[Math.floor(Math.random() * proto.firstNames.length)];
-            const ln = proto.lastNames[Math.floor(Math.random() * proto.lastNames.length)];
+            // 极端情况：300 次都撞名（池子过小），从已过滤的安全名中随机取并加后缀
+            const safeFn = proto.firstNames.filter(n => !nbaNameParts.has(n));
+            const safeLn = proto.lastNames.filter(n => !nbaNameParts.has(n));
+            const fn = safeFn.length ? safeFn[Math.floor(Math.random() * safeFn.length)] : proto.firstNames[0];
+            const ln = safeLn.length ? safeLn[Math.floor(Math.random() * safeLn.length)] : proto.lastNames[0];
             const suffix = String.fromCharCode(65 + Math.floor(Math.random() * 26));
             const full = `${fn}·${ln}${suffix}`;
             usedNames.add(full);

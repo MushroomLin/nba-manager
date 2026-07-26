@@ -613,6 +613,13 @@ const SimEngine = (() => {
     function simulateSeries(homePlayers, awayPlayers) {
         let homeWins = 0, awayWins = 0;
         const games = [];
+        // 系列赛每场球员数据快照，供总决赛 MVP 评选使用
+        // 结构: [{ home: { teamId, lines }, away: { teamId, lines }, homeWon, ... }]
+        // teamId 从球员对象的 t 字段推断（系列赛方high/low的真实球队ID）
+        const gameStats = [];
+        // 从球员对象推断球队 ID（homePlayers[0].t 即系列赛 high 的真实球队）
+        const homeTeamId = (homePlayers && homePlayers[0] && homePlayers[0].t) || null;
+        const awayTeamId = (awayPlayers && awayPlayers[0] && awayPlayers[0].t) || null;
         const homeAdv = [1, 1, 0, 0, 1, 0, 1];
         let g = 0;
         while (homeWins < 4 && awayWins < 4 && g < 7) {
@@ -637,9 +644,20 @@ const SimEngine = (() => {
             }
             if (homeWon) homeWins++; else awayWins++;
             games.push({ homeWon, score: `${res.away.score}-${res.home.score}` });
+            // 记录每场球员统计快照（按系列赛 high/low 真实球队分组，不是场地角度）
+            // res.home 是 venueHome 角度（场地主队），需要还原到 seriesHome（系列赛 high 球队）
+            const seriesHomeSide = isHomeVenue ? res.home : res.away;
+            const seriesAwaySide = isHomeVenue ? res.away : res.home;
+            gameStats.push({
+                home: { teamId: homeTeamId, lines: seriesHomeSide.lines || [] },
+                away: { teamId: awayTeamId, lines: seriesAwaySide.lines || [] },
+                homeWon,
+                homeScore: seriesHomeSide.score,
+                awayScore: seriesAwaySide.score,
+            });
             g++;
         }
-        return { homeWins, awayWins, winner: homeWins > awayWins ? "home" : "away", games };
+        return { homeWins, awayWins, winner: homeWins > awayWins ? "home" : "away", games, gameStats };
     }
 
     // ================================================================

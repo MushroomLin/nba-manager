@@ -125,7 +125,7 @@ const SeasonEngine = (() => {
 
     // 模拟一个季后赛轮次
     // pairings: [{high:teamId, low:teamId}]
-    // 返回 [{high, low, winner, highWins, lowWins, games}]
+    // 返回 [{high, low, winner, highWins, lowWins, games, gameStats}]
     function simulatePlayoffRound(pairings, teamsPlayers) {
         return pairings.map(pair => {
             const homePlayers = teamsPlayers[pair.high.teamId];
@@ -136,6 +136,7 @@ const SeasonEngine = (() => {
                 winner: res.winner === "home" ? pair.high : pair.low,
                 highWins: res.homeWins, lowWins: res.awayWins,
                 games: res.games,
+                gameStats: res.gameStats || [],
             };
         });
     }
@@ -168,11 +169,14 @@ const SeasonEngine = (() => {
 
     // 休赛期：球员成长与老化
     // 返回 { changes, retired } —— changes 为重要成长记录，retired 为退役球员数组
+    // 注意：自由球员（isFreeAgent=true）由 ageFreeAgents 单独处理，此处跳过避免双重老化
     function offseasonProgression(players) {
         const changes = [];
         const retired = [];
         // 第一阶段：年龄增长 + 能力调整（暂不清除 isRookie，留给后续评选参考）
         players.forEach(p => {
+            // 自由球员由 ageFreeAgents 单独处理，此处跳过避免双重老化
+            if (p.isFreeAgent) return;
             const before = { ...p };
             // 年龄老化
             p.a += 1;
@@ -241,7 +245,9 @@ const SeasonEngine = (() => {
         // 第二阶段：评估退役
         // 规则：35岁以上老将按能力衰退程度概率退役；38岁以上强制退役概率提升；
         // 保证联盟每年有合理数量的球员退役（约 20-30 人），与新秀补充量平衡
+        // 注意：自由球员（isFreeAgent=true）由 ageFreeAgents 处理退役，此处跳过
         players.forEach(p => {
+            if (p.isFreeAgent) return;
             if (p.isFiller) {
                 // 填充球员：能力过低或年龄过大直接淘汰（不进入自由市场）
                 if (p.o < 65 || p.a > 36) {
@@ -300,7 +306,10 @@ const SeasonEngine = (() => {
         // 这会导致 ROY 找不到新秀。修复方案：把 isRookie 清除时机改到「新赛季的第一次比赛后」。
         // 但更简单的做法：在 computeAwards 中通过 draftYear 字段判断是否为新秀赛季。
         // 这里仍然清除 isRookie，保持与新秀「只享受一年新秀待遇」的语义一致。
+        // 注意：自由球员（含落选新秀）的 isRookie 由 ageFreeAgents 或签约后处理，
+        // 落选新秀若被签约仍应算新秀（ROY 候选），此处跳过
         players.forEach(p => {
+            if (p.isFreeAgent) return;
             if (!p.isRetired && p.isRookie) {
                 // 把新秀赛季信息存入 lastRookieYear，供 computeAwards 评选 ROY 使用
                 p.lastRookieYear = p.draftYear;
@@ -396,26 +405,42 @@ const SeasonEngine = (() => {
                 teamSal -= (toRelease.sal || 0);
                 toRelease.t = null;
                 toRelease.isFreeAgent = true;
+                // 重新进入自由市场，滞留计时从 0 开始
+                toRelease.yearsInFreeAgency = 0;
                 released.push(toRelease);
             }
         });
-        // 同步 state.players：移除被释放的球员
-        if (released.length > 0 && state.players) {
-            const releasedIds = new Set(released.map(p => p.id));
-            state.players = state.players.filter(p => !releasedIds.has(p.id));
-        }
+        // 修复：被释放球员不再从 state.players 删除，而是保留并标记为自由球员
+        // 用户要求：自由球员应来自各球队裁员/硬帽释放，而非纯随机生成
+        // 这些球员已在循环中标记 isFreeAgent=true, t=null，保留在 state.players 供自由市场使用
         return released;
     }
 
-    // 生成自由球员（休赛期补充市场）
-    function generateFreeAgents(count = 15) {
+    // 生成自由球员（仅作为补充，数量不足时填充）
+    // 修复：用户要求自由球员应来自各球队裁员/新秀离队，而非纯随机生成
+    // 主来源：enforceHardCap 释放的球员 + 名单超额裁减的球员 + 选秀落选新秀
+    // 本函数仅在以上来源不足时少量补充，避免自由市场空空荡荡
+    function generateFreeAgents(count = 8) {
         const proto = window.ROOKIE_PROTOTYPES;
         const fas = [];
         const usedNames = new Set();
+        // NBA 名字组件黑名单（与新秀生成一致，避免与 NBA 球员重名）
+        const nbaNameParts = new Set();
+        if (window.PLAYERS_DATA) {
+            window.PLAYERS_DATA.forEach(p => {
+                if (typeof p.n === 'string') {
+                    p.n.split('·').forEach(part => {
+                        const t = part.trim();
+                        if (t) nbaNameParts.add(t);
+                    });
+                }
+            });
+        }
         function genName() {
-            for (let attempt = 0; attempt < 30; attempt++) {
+            for (let attempt = 0; attempt < 300; attempt++) {
                 const fn = proto.firstNames[Math.floor(Math.random() * proto.firstNames.length)];
                 const ln = proto.lastNames[Math.floor(Math.random() * proto.lastNames.length)];
+                if (nbaNameParts.has(fn) || nbaNameParts.has(ln)) continue;
                 const full = `${fn}·${ln}`;
                 if (!usedNames.has(full)) { usedNames.add(full); return full; }
             }
@@ -424,15 +449,15 @@ const SeasonEngine = (() => {
         for (let i = 0; i < count; i++) {
             const pos = pick(proto.positions);
             const profile = window.ROOKIE_POS_PROFILES[pos];
-            const ovr = randInt(66, 76);
-            const age = randInt(24, 33);
+            const ovr = randInt(64, 74);
+            const age = randInt(25, 34);
             const v = () => randInt(-5, 5);
             const p = {
                 id: `fa_${Date.now()}_${i}_${Math.random().toString(36).slice(2,7)}`,
                 n: genName(),
                 t: null,
                 p: pos, a: age, o: ovr, pot: ovr + randInt(0, 3),
-                sal: TradeEngine.salaryForOvr(ovr) * (0.7 + Math.random() * 0.4),
+                sal: TradeEngine.salaryForOvr(ovr) * (0.6 + Math.random() * 0.3),
                 ins: clamp(profile.ins + v(), 40, 80),
                 sh: clamp(profile.sh + v(), 40, 82),
                 pa: clamp(profile.pa + v(), 35, 78),
@@ -441,11 +466,86 @@ const SeasonEngine = (() => {
                 at: clamp(profile.at + v(), 50, 85),
                 iq: clamp(profile.iq + v(), 50, 82),
                 isFreeAgent: true,
+                isFiller: false,
             };
             p.sal = Math.round(p.sal * 10) / 10;
             fas.push(p);
         }
         return fas;
+    }
+
+    // 老化与清理自由球员池：每年休赛期调用
+    // 规则：自由球员年龄+1、能力衰退；年龄过大或能力过低者退役移除
+    // 避免自由市场堆积大量高龄低能球员
+    function ageFreeAgents(state) {
+        if (!state.freeAgents || state.freeAgents.length === 0) return { aged: 0, retired: 0 };
+        let aged = 0, retiredCount = 0;
+        const survivors = [];
+        state.freeAgents.forEach(p => {
+            p.a += 1;
+            // 追踪在自由市场滞留的年数：滞留越久越难找到工作，退役概率递增
+            // 修复：原逻辑只按年龄/能力判定退役，导致大量 27-33 岁 ovr 65-70 球员长期堆积
+            if (p.yearsInFreeAgency == null) p.yearsInFreeAgency = 0;
+            p.yearsInFreeAgency += 1;
+            aged++;
+            // 能力随年龄衰退（简化版）
+            if (p.a > 30) {
+                const delta = p.a > 36 ? randInt(-4, -1) : randInt(-2, 0);
+                p.o = Math.max(40, Math.min(99, p.o + delta));
+                const skills = ["ins","sh","pa","re","de","at","iq"];
+                skills.forEach(s => {
+                    p[s] = Math.max(20, Math.min(99, p[s] + Math.round(delta * 0.7 + randInt(-1, 1))));
+                });
+            }
+            // 退役判定：35+ 按概率退役，40+ 高概率退役，能力过低直接淘汰
+            // 自由球员找不到工作更容易选择退役/转海外，比现役球员更激进
+            let retireProb = 0;
+            if (p.a >= 40) retireProb = 0.55;
+            else if (p.a >= 38) retireProb = 0.35;
+            else if (p.a >= 36) retireProb = 0.20;
+            else if (p.a >= 34) retireProb = 0.10;
+            // 30+ 岁低能力自由球员：难以找到新合同，倾向退役/转海外
+            // 避免自由市场堆积大量 30+ 岁边缘球员
+            if (p.a >= 32 && p.o < 68) retireProb += 0.20;
+            if (p.a >= 30 && p.o < 62) retireProb += 0.25;
+            // 能力过低的自由球员（不论年龄）：难以找工作，倾向退役/转海外联赛
+            // 避免自由市场堆积大量低能力落选新秀
+            if (p.o < 62) retireProb += 0.25;
+            else if (p.o < 66) retireProb += 0.12;
+            if (p.o < 58) retireProb += 0.20;  // 能力极低直接淘汰
+            // 修复：自由市场滞留时间退役加成
+            // 真实 NBA 中落选/被裁球员若 1-2 年找不到工作，通常转海外联赛或退役
+            // 滞留 1 年 +15%，2 年 +35%，3 年 +60%，4 年 +85%（几乎必然退役）
+            // 这避免自由市场无限膨胀（原 10 季 10→373 人）
+            if (p.yearsInFreeAgency >= 4) retireProb += 0.85;
+            else if (p.yearsInFreeAgency >= 3) retireProb += 0.60;
+            else if (p.yearsInFreeAgency >= 2) retireProb += 0.35;
+            else if (p.yearsInFreeAgency >= 1) retireProb += 0.15;
+            if (Math.random() < retireProb) {
+                p.isRetired = true;
+                retiredCount++;
+            } else {
+                // 薪资随能力重算（老将折扣）；滞留越久薪资越低（急切签约）
+                p.sal = Math.round(adjustSalaryByAge(p) * 10) / 10;
+                if (p.yearsInFreeAgency >= 2) {
+                    p.sal = Math.max(0.5, Math.round(p.sal * 0.7 * 10) / 10);
+                }
+                survivors.push(p);
+            }
+        });
+        // 修复：自由市场容量上限。真实 NBA 自由市场通常 50-150 人，超过 150 时清理最弱球员
+        // 避免极端堆积情况下退役逻辑仍不够清理
+        const MAX_FA = 150;
+        if (survivors.length > MAX_FA) {
+            survivors.sort((a, b) => a.o - b.o); // 升序，最弱在前
+            const toRemove = survivors.splice(0, survivors.length - MAX_FA);
+            toRemove.forEach(p => {
+                p.isRetired = true;
+                retiredCount++;
+            });
+        }
+        state.freeAgents = survivors;
+        return { aged, retired: retiredCount };
     }
 
     // 签约自由球员（加入球队，需有名额且薪资空间/特例）
@@ -462,6 +562,8 @@ const SeasonEngine = (() => {
         const tid = teamId != null ? teamId : (teamPlayers.find(p => p && p.t != null) || {}).t;
         if (tid != null) player.t = tid;
         player.isFreeAgent = false;
+        // 重置自由市场滞留计时（签约后从 0 重新开始）
+        player.yearsInFreeAgency = 0;
         teamPlayers.push(player);
         return { ok: true };
     }
@@ -474,6 +576,8 @@ const SeasonEngine = (() => {
         const [p] = teamPlayers.splice(idx, 1);
         p.isFreeAgent = true;
         p.t = null;
+        // 重新进入自由市场，滞留计时从 0 开始
+        p.yearsInFreeAgency = 0;
         return { ok: true, player: p };
     }
 
@@ -538,6 +642,10 @@ const SeasonEngine = (() => {
         });
 
         // 基于聚合后的数据生成候选
+        // 构建球队 conf 映射，用于东西部 MVP 评选
+        const teamConf = {};
+        (state.teams || []).forEach(t => { teamConf[t.id] = t.conf; });
+
         Object.values(playerAgg).forEach(({ p, s, gp, teamId }) => {
             if (gp < 20) return; // 至少打 20 场才参评（按整季总场次，不再因交易被拆分过滤）
             const teamRec = state.records[teamId] || { win: 0, loss: 0 };
@@ -577,14 +685,32 @@ const SeasonEngine = (() => {
             const sortedRoster = [...(state.teamsPlayers[teamId] || [])].sort((a, b) => b.o - a.o);
             const isBench = p.isFiller || !sortedRoster.slice(0, 5).includes(p);
             const sixManScore = efficiency * 1.1 + (isBench ? 5 : -10) + p.o * 0.1;
-            // 进步最快: 与上赛季 ovr 差值 + 数据提升
+            // 进步最快: 综合考虑 ovr 提升 + 数据提升
+            // 修复：原评分仅 ovrDelta*5 + efficiency*0.5，门槛 ovrDelta>=4 过严
+            // 真实 NBA MIP 主要看数据提升幅度（如 Ja Morant 19→27 PPG），ovr 提升是次要的
+            // 现在加入 ppg/rpg/apg 提升评分，让数据暴涨但 ovr 提升不大的球员也能当选
             const hist = playerHistory[p.id];
-            const lastOvr = hist && hist.length ? hist[hist.length - 1].ovr : p.o;
+            const lastRecord = hist && hist.length ? hist[hist.length - 1] : null;
+            const lastOvr = lastRecord ? lastRecord.ovr : p.o;
             const ovrDelta = p.o - lastOvr;
-            const mipScore = ovrDelta * 5 + efficiency * 0.5;
+            // 数据提升（vs 上赛季 per-game）：lastRecord.pts/reb/ast 已是 per-game
+            const lastPpg = lastRecord ? (lastRecord.pts || 0) : 0;
+            const lastRpg = lastRecord ? (lastRecord.reb || 0) : 0;
+            const lastApg = lastRecord ? (lastRecord.ast || 0) : 0;
+            const ppgDelta = ppg - lastPpg;
+            const rpgDelta = rpg - lastRpg;
+            const apgDelta = apg - lastApg;
+            // 数据提升评分：ppg 提升权重最高（真实 MIP 多为得分暴涨）
+            const dataImproveScore = Math.max(0, ppgDelta) * 2.5
+                                   + Math.max(0, rpgDelta) * 1.5
+                                   + Math.max(0, apgDelta) * 2.0;
+            // MIP 综合评分：数据提升为主 + ovr 提升为辅 + 本季数据基础分
+            const mipScore = dataImproveScore + ovrDelta * 3 + efficiency * 0.3;
             candidates.push({
                 player: p, teamId, ppg, rpg, apg, spg, bpg, tpg, fgPct, tpPct, gp, winRate,
                 efficiency, mvpScore, defScore, sixManScore, mipScore, ovrDelta, isBench,
+                conf: teamConf[teamId] || null,
+                ppgDelta, rpgDelta, apgDelta, lastPpg, lastRpg, lastApg,
             });
         });
 
@@ -627,14 +753,30 @@ const SeasonEngine = (() => {
             return c.ppg >= 12 && c.gp >= 30;
         }), "sixManScore");
         const mipList = sorted(candidates.filter(c => {
-            if (c.ovrDelta < 4) return false; // 修复：原 <2 太低，第 2 季 ovrΔ=2 也当选；提到 4
-            // 排除上赛季已成名的超巨（hist 存在且 lastOvr>=82）
+            // 修复 MIP 评选门槛：
+            // 原条件 ovrDelta>=4 过严，且只看 ovr 提升忽略数据提升，导致 MIP 经常无人当选
+            // 真实 NBA MIP 标准是"数据显著提升"，ovr 提升幅度不是硬指标
+            // 新门槛：ovrDelta>=2 或 数据提升显著（ppg/rpg/apg 任一提升≥3）
             const h = playerHistory[c.player.id];
-            if (h && h.length && h[h.length - 1].ovr >= 82) return false;
             // 排除新秀（新秀赛季不参评 MIP，因为没有上赛季数据可比）
             if (c.player.draftYear === state.year) return false;
+            // 排除上赛季已成名的超巨（hist 存在且 lastOvr>=82，已是顶级球员无"进步空间"）
+            if (h && h.length && h[h.length - 1].ovr >= 82) return false;
+            // 必须有上赛季历史数据可比
+            if (!h || h.length === 0) return false;
+            const dataImprove = Math.max(0, c.ppgDelta) + Math.max(0, c.rpgDelta) + Math.max(0, c.apgDelta);
+            const qualified = c.ovrDelta >= 2 || dataImprove >= 3;
+            if (!qualified) return false;
+            // 本季数据至少有轮换水准（ppg>=8 或 efficiency>=15），避免低分球员靠微弱提升当选
+            if (c.ppg < 8 && c.efficiency < 15) return false;
             return true;
         }), "mipScore");
+
+        // 东西部 MVP：按 conf 分别评选
+        // 真实 NBA 有东西部全明星MVP，游戏中作为常规赛季东西部最佳球员奖项
+        // 评选标准：使用 mvpScore 但放宽硬门槛（仅排除 -1000 硬过滤的）
+        const eastMvpList = sorted(candidates.filter(c => c.conf === 'East' && c.mvpScore > -1000), "mvpScore");
+        const westMvpList = sorted(candidates.filter(c => c.conf === 'West' && c.mvpScore > -1000), "mvpScore");
 
         // 最佳阵容：每阵 2后场(PG/SG) + 3前场(SF/PF/C)，限制中锋最多 1 人，避免一阵出现 3 中锋
         // 修复：原无绝对门槛，导致 ovr=80 ppg=9.2 球员入选一阵（S6 PG 位置人才断层时）
@@ -689,6 +831,8 @@ const SeasonEngine = (() => {
         return {
             year: state.year,
             mvp: mvpList[0] || null,
+            eastMvp: eastMvpList[0] || null,
+            westMvp: westMvpList[0] || null,
             dpoy: dpoyList[0] || null,
             roy: royList[0] || null,
             sixMan: sixManList[0] || null,
@@ -709,6 +853,8 @@ const SeasonEngine = (() => {
             allRookie: allRookieTeams[0].map(c => c.player.id),
             // 详情用于展示
             mvpTop5: mvpList.slice(0, 5),
+            eastMvpTop5: eastMvpList.slice(0, 5),
+            westMvpTop5: westMvpList.slice(0, 5),
             dpoyTop5: dpoyList.slice(0, 5),
             royTop5: royList.slice(0, 5),
             sixManTop5: sixManList.slice(0, 5),
@@ -723,6 +869,83 @@ const SeasonEngine = (() => {
         };
     }
 
+    // ================================================================
+    //  总决赛 MVP 评选
+    //  规则：基于总决赛系列赛每场双方球员数据，冠军球队中综合评分最高者当选
+    //  评分：得分为主 + 篮板/助攻 + 系列赛胜场加成
+    //  finalsResult: simulateSeries 返回（需含每场 lines/teamId 信息）
+    //  highTeamId, lowTeamId: 总决赛双方球队 ID
+    //  championTeamId: 冠军球队 ID（FMVP 只从冠军队选，真实 NBA 规则）
+    // ================================================================
+    function computeFinalsMVP(finalsResult, highTeamId, lowTeamId, championTeamId) {
+        if (!finalsResult || !finalsResult.gameStats) return null;
+        // 聚合球员统计：每场 lines 累加到对应球员
+        const playerStats = {}; // pid -> { player, teamId, gp, pts, reb, ast, stl, blk, ... }
+        finalsResult.gameStats.forEach(g => {
+            // g.home/away 结构: { teamId, lines: [{player, min, pts, reb, ast, ...}] }
+            [g.home, g.away].forEach(side => {
+                if (!side || !side.lines) return;
+                side.lines.forEach(line => {
+                    if (!line.player) return;
+                    const pid = line.player.id;
+                    if (!playerStats[pid]) {
+                        playerStats[pid] = {
+                            player: line.player,
+                            teamId: side.teamId,
+                            gp: 0, min: 0, pts: 0, reb: 0, ast: 0, stl: 0, blk: 0, tov: 0, fgm: 0, fga: 0, tpm: 0, tpa: 0,
+                        };
+                    }
+                    const s = playerStats[pid];
+                    s.gp++;
+                    s.min += line.min || 0;
+                    s.pts += line.pts || 0;
+                    s.reb += line.reb || 0;
+                    s.ast += line.ast || 0;
+                    s.stl += line.stl || 0;
+                    s.blk += line.blk || 0;
+                    s.tov += line.tov || 0;
+                    s.fgm += line.fgm || 0;
+                    s.fga += line.fga || 0;
+                    s.tpm += line.tpm || 0;
+                    s.tpa += line.tpa || 0;
+                });
+            });
+        });
+        // FMVP 只从冠军球队选（真实 NBA 规则：败方 FMVP 仅 1969 Jerry West 一例，此后皆为冠军队球员）
+        const candidates = Object.values(playerStats).filter(s => s.teamId === championTeamId);
+        if (candidates.length === 0) return null;
+        // 评分：总分 + 篮板 + 助攻 + 胜场加成（冠军默认 4 胜）
+        // ppg/rpg/apg 用 per-game，避免出场场次差异影响
+        candidates.forEach(s => {
+            const ppg = s.pts / Math.max(1, s.gp);
+            const rpg = s.reb / Math.max(1, s.gp);
+            const apg = s.ast / Math.max(1, s.gp);
+            const spg = s.stl / Math.max(1, s.gp);
+            const bpg = s.blk / Math.max(1, s.gp);
+            const tpg = s.tov / Math.max(1, s.gp);
+            const fgPct = s.fga > 0 ? s.fgm / s.fga : 0.45;
+            const efficiency = ppg + rpg * 1.2 + apg * 2.0 + spg * 2 + bpg * 1.5 - tpg * 1.2;
+            // FMVP 评分：效率为主 + 出场时间 + 命中率加成
+            s.score = efficiency * 1.0 + s.min / Math.max(1, s.gp) * 0.3 + (fgPct - 0.45) * 30;
+            s.ppg = ppg; s.rpg = rpg; s.apg = apg; s.spg = spg; s.bpg = bpg; s.fgPct = fgPct;
+        });
+        candidates.sort((a, b) => b.score - a.score);
+        const fmvp = candidates[0];
+        return {
+            player: fmvp.player,
+            teamId: fmvp.teamId,
+            gp: fmvp.gp,
+            ppg: +fmvp.ppg.toFixed(1),
+            rpg: +fmvp.rpg.toFixed(1),
+            apg: +fmvp.apg.toFixed(1),
+            spg: +fmvp.spg.toFixed(1),
+            bpg: +fmvp.bpg.toFixed(1),
+            fgPct: +fmvp.fgPct.toFixed(3),
+            min: +(fmvp.min / Math.max(1, fmvp.gp)).toFixed(1),
+            score: +fmvp.score.toFixed(2),
+        };
+    }
+
     return {
         generateSchedule,
         computeStandings,
@@ -731,9 +954,11 @@ const SeasonEngine = (() => {
         nextRound,
         offseasonProgression,
         generateFreeAgents,
+        ageFreeAgents,
         signFreeAgent,
         releasePlayer,
         computeAwards,
+        computeFinalsMVP,
         enforceHardCap,
     };
 })();
