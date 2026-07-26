@@ -2634,10 +2634,20 @@ const App = (() => {
             else if ((a.allRookieSecond || []).includes(pid)) addAward('新秀二阵', a.year);
             else if ((a.allRookie || []).includes(pid)) addAward('新秀阵容', a.year);
         });
+        // 总冠军：球员当年所在球队 = 冠军球队
+        // champions.year 是"赛季起始年"，playerHistory.year 是"赛季结束年"，需 +1 对齐
+        // 判断依据：该年 playerHistory 记录中存在 teamId = 冠军队（支持赛季中交易，只要该年在冠军队打过即算）
+        // 当前赛季总冠军刚产生（playerHistory 尚未记录）时，用 p.t === c.team 兜底
+        (state.champions || []).forEach(c => {
+            const endYear = c.year + 1;
+            const inChampTeam = ((state.playerHistory || {})[pid] || []).some(h => h.year === endYear && h.teamId === c.team)
+                || (p.t === c.team && state.year === c.year);
+            if (inChampTeam) addAward('总冠军', c.year);
+        });
         // 按奖项重要性排序展示
-        const awardOrder = ['MVP', '总决赛MVP', '东部决赛MVP', '西部决赛MVP', 'DPOY', 'ROY', '6MOY', 'MIP',
+        const awardOrder = ['总冠军', 'MVP', '总决赛MVP', '东部决赛MVP', '西部决赛MVP', 'DPOY', 'ROY', '6MOY', 'MIP',
             '最佳阵容一阵', '最佳阵容二阵', '最佳阵容三阵', '最佳防守一阵', '最佳防守二阵', '新秀一阵', '新秀二阵'];
-        const awardIcons = { MVP:'🏆', 总决赛MVP:'🏆', 东部决赛MVP:'🏆', 西部决赛MVP:'🏆', DPOY:'🛡️', ROY:'🌟', '6MOY':'🔥', MIP:'📈' };
+        const awardIcons = { 总冠军:'💍', MVP:'🏆', 总决赛MVP:'🏆', 东部决赛MVP:'🏆', 西部决赛MVP:'🏆', DPOY:'🛡️', ROY:'🌟', '6MOY':'🔥', MIP:'📈' };
         const fmtYear = (y) => `${y}-${String(y+1).slice(2)}`;
         const awardCards = awardOrder.filter(t => awardGroups[t]).map(t => {
             const years = [...awardGroups[t]].sort((a, b) => b - a);
