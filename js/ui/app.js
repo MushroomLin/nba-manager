@@ -566,16 +566,71 @@ const App = (() => {
     }
 
     // ============ 奖项历史 ============
+    // 重构 v11：按奖项聚合查看
+    //   - 顶部 Tab 切换：「按赛季」「按奖项」两种视图
+    //   - 按赛季：原表，每赛季一行，含 MVP/FMVP/DPOY/ROY/6MOY/MIP/冠军
+    //   - 按奖项：选择某奖项（MVP/FMVP/DPOY/ROY/6MOY/MIP/总冠军/最佳阵容/防守阵容/新秀阵容）
+    //            显示该奖项历年获奖者列表，含数据明细
+    let awardsViewMode = 'season';   // 'season' | 'byAward'
+    let awardsSelectedTab = 'MVP';   // byAward 模式下当前选中的奖项
+
     function showAwardsHistory() {
         const hist = state.awardsHistory || [];
         if (hist.length === 0) {
             showModal(`<div class="modal-title">🏆 奖项历史</div><div class="muted center" style="padding:30px">暂无奖项记录（常规赛结束后评选）</div><div class="modal-actions"><button class="btn btn-primary" onclick="App.closeModal()">关闭</button></div>`);
             return;
         }
-        const myId = state.manager.teamId;
-        // 按年份分组：每个赛季一行，含 MVP/东西部MVP/FMVP/DPOY/ROY/6MOY/MIP/冠军
+        renderAwardsHistory();
+    }
+
+    function renderAwardsHistory() {
+        const hist = state.awardsHistory || [];
+        // 按奖项聚合的候选 Tab 列表（含个人奖项 + 集体荣誉 + 阵容）
+        const awardTabs = [
+            { key: 'MVP',      label: 'MVP',     icon: '🏆' },
+            { key: 'FMVP',     label: 'FMVP',    icon: '🏆' },
+            { key: '总冠军',   label: '总冠军',  icon: '💍' },
+            { key: 'DPOY',     label: 'DPOY',    icon: '🛡️' },
+            { key: 'ROY',      label: 'ROY',     icon: '🌟' },
+            { key: '6MOY',     label: '6MOY',    icon: '🔥' },
+            { key: 'MIP',      label: 'MIP',     icon: '📈' },
+            { key: '一阵',     label: '最佳一阵', icon: '⭐' },
+            { key: '二阵',     label: '最佳二阵', icon: '⭐' },
+            { key: '三阵',     label: '最佳三阵', icon: '⭐' },
+            { key: '防守一阵', label: '防守一阵', icon: '🛡️' },
+            { key: '防守二阵', label: '防守二阵', icon: '🛡️' },
+            { key: '新秀一阵', label: '新秀一阵', icon: '🌱' },
+            { key: '新秀二阵', label: '新秀二阵', icon: '🌱' },
+        ];
+
+        const tabsBar = `
+            <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
+                <button class="btn ${awardsViewMode==='season'?'btn-primary':''}" style="padding:6px 12px;font-size:12px" onclick="App.setAwardsView('season')">按赛季</button>
+                <button class="btn ${awardsViewMode==='byAward'?'btn-primary':''}" style="padding:6px 12px;font-size:12px" onclick="App.setAwardsView('byAward')">按奖项</button>
+            </div>`;
+
+        let body;
+        if (awardsViewMode === 'season') {
+            body = renderAwardsBySeason(hist);
+        } else {
+            // 按奖项模式：奖项 Tab + 当前奖项的历年列表
+            const tabsRow = awardTabs.map(t => `
+                <button class="btn ${awardsSelectedTab===t.key?'btn-primary':''}" style="padding:5px 10px;font-size:11px;margin:2px" onclick="App.setAwardsTab('${t.key}')">${t.icon} ${t.label}</button>
+            `).join('');
+            body = `<div style="margin-bottom:10px">${tabsRow}</div>` + renderAwardsByType(hist, awardsSelectedTab);
+        }
+
+        showModal(`
+            <div class="modal-title">🏆 奖项历史</div>
+            ${tabsBar}
+            ${body}
+            <div class="modal-actions"><button class="btn btn-primary" onclick="App.closeModal()">关闭</button></div>
+        `);
+    }
+
+    // 按赛季视图（原表）
+    function renderAwardsBySeason(hist) {
         const rows = hist.slice().reverse().map(a => {
-            const fmt = (c) => c ? `${c.player.n}<br><span class="muted" style="font-size:11px">${teamAbbr(c.teamId)} ${c.ppg.toFixed(1)}分</span>` : '-';
             const mvp = a.mvp ? `${a.mvp.player.n}<br><span class="muted" style="font-size:11px">${teamAbbr(a.mvp.teamId)} ${a.mvp.ppg.toFixed(1)}分</span>` : '-';
             const eMvp = a.eastMvp ? `${a.eastMvp.player.n}<br><span class="muted" style="font-size:11px">${teamAbbr(a.eastMvp.teamId)} ${a.eastMvp.ppg.toFixed(1)}分</span>` : '-';
             const wMvp = a.westMvp ? `${a.westMvp.player.n}<br><span class="muted" style="font-size:11px">${teamAbbr(a.westMvp.teamId)} ${a.westMvp.ppg.toFixed(1)}分</span>` : '-';
@@ -594,14 +649,121 @@ const App = (() => {
                 <td>${champStr}</td>
             </tr>`;
         }).join("");
-        showModal(`
-            <div class="modal-title">🏆 奖项历史</div>
-            <div class="table-wrap"><table style="font-size:12px"><thead><tr>
-                <th class="num">赛季</th><th>MVP</th><th>东部MVP</th><th>西部MVP</th><th>FMVP</th>
-                <th>DPOY</th><th>ROY</th><th>6MOY</th><th>MIP</th><th>冠军</th>
-            </tr></thead><tbody>${rows}</tbody></table></div>
-            <div class="modal-actions"><button class="btn btn-primary" onclick="App.closeModal()">关闭</button></div>
-        `);
+        return `<div class="table-wrap"><table style="font-size:12px"><thead><tr>
+            <th class="num">赛季</th><th>MVP</th><th>东部MVP</th><th>西部MVP</th><th>FMVP</th>
+            <th>DPOY</th><th>ROY</th><th>6MOY</th><th>MIP</th><th>冠军</th>
+        </tr></thead><tbody>${rows}</tbody></table></div>`;
+    }
+
+    // 按奖项视图：返回该奖项历年获奖者表格
+    function renderAwardsByType(hist, type) {
+        const fmtYear = (y) => `${y}-${String(y+1).slice(2)}`;
+        const playerLink = (pid, name) => `<a href="#" onclick="App.showPlayerDetail('${pid}');return false" style="color:var(--nba-blue);text-decoration:none;font-weight:600">${name}</a>`;
+        const teamStr = (tid) => tid ? teamAbbr(tid) : '-';
+
+        // 收集该奖项历年记录：[{year, name, pid, teamId, line}]
+        let records = [];
+
+        if (type === 'MVP') {
+            records = hist.map(a => a.mvp ? { year: a.year, name: a.mvp.player.n, pid: a.mvp.player.id, teamId: a.mvp.teamId, line: `${a.mvp.ppg.toFixed(1)}分 ${a.mvp.rpg.toFixed(1)}板 ${a.mvp.apg.toFixed(1)}助` } : null).filter(Boolean);
+        } else if (type === 'FMVP') {
+            records = hist.map(a => {
+                const champ = state.champions.find(c => c.year === a.year);
+                if (!champ || !champ.finalsMVP) return null;
+                return { year: a.year, name: champ.finalsMVP.n, pid: champ.finalsMVP.id, teamId: champ.team, line: `${champ.finalsMVP.ppg.toFixed(1)}分 ${champ.finalsMVP.rpg.toFixed(1)}板 ${champ.finalsMVP.apg.toFixed(1)}助 · ${champ.finalsScore||''}` };
+            }).filter(Boolean);
+        } else if (type === '总冠军') {
+            // 总冠军：展示冠军队 + FMVP
+            records = state.champions.map(c => ({
+                year: c.year,
+                name: c.name,
+                pid: null,
+                teamId: c.team,
+                line: `FMVP: ${c.finalsMVP ? c.finalsMVP.n : '-'} · 比分 ${c.finalsScore||'-'}`,
+            }));
+        } else if (type === 'DPOY') {
+            records = hist.map(a => a.dpoy ? { year: a.year, name: a.dpoy.player.n, pid: a.dpoy.player.id, teamId: a.dpoy.teamId, line: `${a.dpoy.ppg.toFixed(1)}分 ${a.dpoy.rpg.toFixed(1)}板 ${a.dpoy.bpg.toFixed(1)}帽 ${a.dpoy.spg.toFixed(1)}断` } : null).filter(Boolean);
+        } else if (type === 'ROY') {
+            records = hist.map(a => a.roy ? { year: a.year, name: a.roy.player.n, pid: a.roy.player.id, teamId: a.roy.teamId, line: `${a.roy.ppg.toFixed(1)}分 ${a.roy.rpg.toFixed(1)}板 ${a.roy.apg.toFixed(1)}助` } : null).filter(Boolean);
+        } else if (type === '6MOY') {
+            records = hist.map(a => a.sixMan ? { year: a.year, name: a.sixMan.player.n, pid: a.sixMan.player.id, teamId: a.sixMan.teamId, line: `${a.sixMan.ppg.toFixed(1)}分 ${a.sixMan.rpg.toFixed(1)}板 ${a.sixMan.apg.toFixed(1)}助` } : null).filter(Boolean);
+        } else if (type === 'MIP') {
+            records = hist.map(a => a.mip ? { year: a.year, name: a.mip.player.n, pid: a.mip.player.id, teamId: a.mip.teamId, line: `+${a.mip.ppgDelta.toFixed(1)}分 ${a.mip.ppg.toFixed(1)}分 ${a.mip.rpg.toFixed(1)}板 ${a.mip.apg.toFixed(1)}助` } : null).filter(Boolean);
+        } else if (type === '一阵') {
+            records = collectTeamAwards(hist, 'allNBAFirstDetail', 'allNBAFirst');
+        } else if (type === '二阵') {
+            records = collectTeamAwards(hist, 'allNBASecondDetail', 'allNBASecond');
+        } else if (type === '三阵') {
+            records = collectTeamAwards(hist, 'allNBAThirdDetail', 'allNBAThird');
+        } else if (type === '防守一阵') {
+            records = collectTeamAwards(hist, 'allDefFirstDetail', 'allDefFirst');
+        } else if (type === '防守二阵') {
+            records = collectTeamAwards(hist, 'allDefSecondDetail', 'allDefSecond');
+        } else if (type === '新秀一阵') {
+            records = collectTeamAwards(hist, 'allRookieFirstDetail', 'allRookieFirst');
+        } else if (type === '新秀二阵') {
+            records = collectTeamAwards(hist, 'allRookieSecondDetail', 'allRookieSecond');
+        }
+
+        if (records.length === 0) {
+            return `<div class="muted center" style="padding:30px">暂无 ${type} 记录</div>`;
+        }
+
+        // 倒序：最近年份在最前
+        records.sort((a, b) => b.year - a.year);
+
+        const rows = records.map(r => {
+            const nameHtml = r.pid ? playerLink(r.pid, r.name) : `<b>${r.name}</b>`;
+            return `<tr>
+                <td class="num"><b>${fmtYear(r.year)}</b></td>
+                <td>${nameHtml}</td>
+                <td class="num">${teamStr(r.teamId)}</td>
+                <td class="muted" style="font-size:11px">${r.line || ''}</td>
+            </tr>`;
+        }).join('');
+
+        return `<div class="table-wrap"><table style="font-size:12px"><thead><tr>
+            <th class="num">赛季</th><th>${type === '总冠军' ? '球队' : '球员'}</th><th>球队</th><th>数据</th>
+        </tr></thead><tbody>${rows}</tbody></table></div>`;
+    }
+
+    // 阵容类奖项聚合：每赛季可能有多个球员入选，展开为多行
+    function collectTeamAwards(hist, detailKey, idListKey) {
+        const out = [];
+        hist.forEach(a => {
+            // 优先用 detail（含数据），降级用 id list
+            const detail = a[detailKey];
+            if (detail && Array.isArray(detail)) {
+                detail.forEach(c => {
+                    out.push({
+                        year: a.year,
+                        name: c.player.n,
+                        pid: c.player.id,
+                        teamId: c.teamId,
+                        line: `${(c.ppg||0).toFixed(1)}分 ${(c.rpg||0).toFixed(1)}板 ${(c.apg||0).toFixed(1)}助`,
+                    });
+                });
+            } else {
+                const ids = a[idListKey] || [];
+                ids.forEach(pid => {
+                    const p = state.players.find(x => x.id === pid);
+                    if (!p) return;
+                    out.push({ year: a.year, name: p.n, pid: pid, teamId: p.t, line: '' });
+                });
+            }
+        });
+        return out;
+    }
+
+    // 切换奖项历史视图模式
+    function setAwardsView(mode) {
+        awardsViewMode = mode;
+        renderAwardsHistory();
+    }
+    // 切换奖项 Tab（按奖项模式下）
+    function setAwardsTab(tab) {
+        awardsSelectedTab = tab;
+        renderAwardsHistory();
     }
 
     // ============ 存档管理（游戏内）============
@@ -3104,6 +3266,7 @@ const App = (() => {
     return {
         init, renderView, advance, fastAdvance, closeModal, releasePlayer, showMoreMenu,
         loadState, showSaveManager, showTacticsModal, showAwardsHistory, showNbaPlayerDetail,
+        setAwardsView, setAwardsTab, showPlayerDetail,
         get state() { return state; },
     };
 })();
