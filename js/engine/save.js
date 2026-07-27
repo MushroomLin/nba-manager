@@ -32,10 +32,41 @@ const SaveEngine = (() => {
     }
 
     // 序列化：移除可重建字段，减小体积并保证 players 与 teamsPlayers 引用一致
+    // 修复 v11：用户反馈"玩了几年后不再自动存档"——根因 localStorage 配额（5-10MB）被撑满
+    //   静默失败。优化：序列化时移除大体积冗余字段：
+    //   1. awardsHistory 中的 *Detail 字段（每阵5球员完整 candidate 对象，含 player 引用+评分，
+    //      30赛季×7阵×5人≈1050 对象，体积巨大；保留 id list 供按奖项查看降级使用）
+    //   2. 球员 _awards 运行时标记（可从 awardsHistory 重建）
+    //   3. isFiller 且 ovr<60 的纯填充球员（无历史价值）
     function serialize(state) {
         const lite = { ...state };
         delete lite.teamsPlayers;  // 从 players.t 重建
         delete lite.standings;     // 从 records 重算
+        // 移除 awardsHistory 中的 *Detail 大字段（保留 id list）
+        if (Array.isArray(lite.awardsHistory)) {
+            lite.awardsHistory = lite.awardsHistory.map(a => {
+                if (!a) return a;
+                const slim = { ...a };
+                ['allNBAFirstDetail','allNBASecondDetail','allNBAThirdDetail',
+                 'allDefFirstDetail','allDefSecondDetail',
+                 'allRookieFirstDetail','allRookieSecondDetail',
+                 'mvpTop5','eastMvpTop5','westMvpTop5','dpoyTop5','royTop5','sixManTop5','mipTop5'
+                ].forEach(k => { delete slim[k]; });
+                return slim;
+            });
+        }
+        // 移除球员运行时 _awards 标记 + 低价值 filler 球员
+        if (Array.isArray(lite.players)) {
+            lite.players = lite.players.filter(p => {
+                if (p && p.isFiller && (p.o || 0) < 60) return false; // 丢弃低能力填充球员
+                return true;
+            }).map(p => {
+                if (!p) return p;
+                const cp = { ...p };
+                delete cp._awards; // 运行时标记，可从 awardsHistory 重建
+                return cp;
+            });
+        }
         return { meta: buildMeta(state), state: lite };
     }
 
