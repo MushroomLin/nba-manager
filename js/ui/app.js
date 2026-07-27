@@ -2314,7 +2314,11 @@ const App = (() => {
                 year: prevYear,
                 ovr: p.o, // 真实数据无 ovr，用当前 ovr（ovrDelta=0，MIP 靠 dataImprove 评分）
                 teamId: p.t,
-                age: season.age || p.a,
+                // 修复：预填的是"上赛季"年龄，应比当前 p.a 小 1
+                // PLAYERS_DATA.a 对应游戏第一赛季（2026-27）年龄，上赛季（2025-26）应为 p.a - 1
+                // 原代码用 season.age || p.a，但 season.age 和 p.a 相同（都来自 2025-26 数据），
+                // 导致预填 age = 第一赛季 age，"第一年不增加年龄"
+                age: (p.a > 1 ? p.a - 1 : p.a),
                 gp: season.gp || 0,
                 min: season.min || 0,
                 pts: season.pts || 0,
