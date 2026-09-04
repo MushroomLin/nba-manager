@@ -1053,3 +1053,40 @@ table .team-logo, table .team-logo-fallback { width: 18px; height: 18px; }
 
 /* 球员搜索对比复选框 */
 .ps-cmp { cursor: pointer; width: 15px; height: 15px; accent-color: #3b6fd4; }
+
+/* ============ 成就墙 ============ */
+.ach-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-top: 14px; }
+.ach-cell { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 10px; text-align: center; transition: transform 0.15s, border-color 0.15s; }
+.ach-cell.unlocked { border-color: rgba(212,175,55,0.45); background: linear-gradient(180deg, rgba(212,175,55,0.08), var(--bg-elevated) 60%); }
+.ach-cell.locked { opacity: 0.55; filter: grayscale(0.4); }
+.ach-cell:hover { transform: translateY(-2px); }
+.ach-icon { font-size: 28px; line-height: 1; margin-bottom: 8px; }
+.ach-name { font-weight: 800; font-size: 13px; margin-bottom: 4px; }
+.ach-cell.unlocked .ach-name { color: var(--gold); }
+.ach-desc { font-size: 11px; color: var(--text-dim); line-height: 1.4; }
+.ach-time { font-size: 10px; color: var(--text-mute); margin-top: 6px; }
+.ach-progress { height: 8px; background: rgba(255,255,255,0.08); border-radius: 4px; overflow: hidden; margin-top: 4px; }
+.ach-progress-fill { height: 100%; background: linear-gradient(90deg, #b8860b, var(--gold)); border-radius: 4px; transition: width 0.4s; }
+
+/* ============ AI 交易报价 ============ */
+.offer-box { display: flex; align-items: stretch; gap: 10px; background: var(--bg-elevated); border-radius: var(--radius); padding: 12px; }
+.offer-side { flex: 1; min-width: 0; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px; }
+.offer-side-title { font-size: 12px; font-weight: 700; color: var(--text-dim); margin-bottom: 8px; }
+.offer-arrow { align-self: center; font-size: 22px; color: var(--gold); flex-shrink: 0; }
+.offer-player { display: flex; align-items: center; gap: 8px; padding: 6px 4px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+.offer-player:last-child { border-bottom: none; }
+
+/* ============ 赛季模拟器（夺冠概率） ============ */
+.odds-bar { height: 10px; background: rgba(255,255,255,0.08); border-radius: 5px; overflow: hidden; min-width: 60px; }
+.odds-fill { height: 100%; background: linear-gradient(90deg, #1d428a, #3b6fd4); border-radius: 5px; }
+.odds-fill.top { background: linear-gradient(90deg, #b8860b, var(--gold)); }
+
+/* ============ 训练方向 ============ */
+.train-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
+.train-option { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; transition: border-color 0.15s, background 0.15s; }
+.train-option:not(.active):hover { border-color: var(--border-light); background: var(--bg-hover); }
+.train-option.active { border-color: var(--nba-blue-light); background: rgba(29,66,138,0.18); }
+.train-label { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+
+/* ============ 键盘快捷键 ============ */
+kbd { display: inline-block; min-width: 26px; padding: 3px 8px; background: var(--bg-elevated); border: 1px solid var(--border-light); border-bottom-width: 2px; border-radius: 5px; font-family: inherit; font-size: 12px; font-weight: 700; text-align: center; color: var(--text); }

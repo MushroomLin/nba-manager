@@ -86,6 +86,13 @@ const App = (() => {
             tactics: { pace: 1, defense: 1, rotation: 1 },
             injuryLog: [], // 本季伤病记录（用于展示）
             tradeLog: [], // 本季 AI 交易记录（用于展示）
+            // 成就系统：{ id: { year, day } }，AchievementEngine 管理
+            achievements: {},
+            tradeCount: 0, // 用户完成的交易笔数（主动提案 + 接受 AI 报价）
+            // AI 主动交易报价收件箱：[{ id, from, give: [players], want: [players], day, expiresDay }]
+            pendingOffers: [],
+            // 训练系统：focus 专项 / gamesSinceSession 距上次训练的比赛场次
+            training: { focus: "balanced", gamesSinceSession: 0 },
             rosterVersion: 2027, // 名单版本号，与 main.js 中 CURRENT_ROSTER_VERSION 对齐
             schemaVersion: 2, // 存档 schema 版本：2 = year 用结束年语义（避免旧存档迁移）
         };
@@ -129,6 +136,13 @@ const App = (() => {
         if (!state.injuryLog) state.injuryLog = [];
         if (!state.tradeLog) state.tradeLog = [];
         if (!state.rosterVersion) state.rosterVersion = 0;
+        // 兼容旧存档：成就 / 交易计数 / AI 报价收件箱 / 训练系统
+        if (!state.achievements) state.achievements = {};
+        if (typeof state.tradeCount !== "number") state.tradeCount = 0;
+        if (!Array.isArray(state.pendingOffers)) state.pendingOffers = [];
+        if (!state.training || typeof state.training !== "object") state.training = { focus: "balanced", gamesSinceSession: 0 };
+        if (!state.training.focus) state.training.focus = "balanced";
+        if (typeof state.training.gamesSinceSession !== "number") state.training.gamesSinceSession = 0;
         // standings 已在读档时置空，这里重算
         updateStandings();
         renderAll();
@@ -154,6 +168,22 @@ const App = (() => {
         const t = state.teams.find(x => x.id === teamId);
         return t ? `${t.city}${t.name}` : teamId;
     }
+
+    // ============ 成就系统钩子 ============
+    // 在关键节点调用，新解锁成就弹金色 toast
+    function checkAchievements(event, ctx) {
+        try {
+            const newly = AchievementEngine.check(state, event, ctx);
+            newly.forEach(a => {
+                toast(`🏆 成就解锁：${a.icon} ${a.name}`, "success", 5000);
+            });
+            return newly;
+        } catch (e) {
+            console.error("[Achievements] 检查失败:", e);
+            return [];
+        }
+    }
+
     function teamAbbr(teamId) { const t = state.teams.find(x => x.id === teamId); return t ? t.abbr : teamId; }
     function teamObj(teamId) { return state.teams.find(x => x.id === teamId); }
 
@@ -962,10 +992,16 @@ const App = (() => {
             <div class="stat-box"><div class="value">${Math.round(rating)}</div><div class="label">球队实力</div></div>
             <div class="stat-box"><div class="value" style="color:${salary>cap?'var(--nba-red-light)':'var(--success)'}">$${salary.toFixed(1)}M</div><div class="label">薪资 / 帽$${cap}M</div></div>
         </div>
+        ${renderOfferInboxCard()}
         <div class="card">
             <div class="card-title">下场对阵</div>
             <div style="font-size:22px;font-weight:800;text-align:center;padding:18px 0;background:var(--bg-elevated);border-radius:var(--radius-sm);margin-bottom:8px">${nextGame}</div>
-            <div class="center muted" style="font-size:12px">点击右上角 ▶ 模拟下一场</div>
+            <div class="center muted" style="font-size:12px">点击右上角 ▶ 模拟下一场（空格键）</div>
+            <div class="dash-actions">
+                <button class="btn" id="title-odds-btn">🎲 模拟夺冠概率</button>
+                <button class="btn" id="ach-btn">🏆 成就 ${unlockedAchCount()}/${AchievementEngine.DEFS.length}</button>
+                <button class="btn" id="training-btn">💪 ${trainingFocusLabel()}</button>
+            </div>
         </div>
         ${renderInjuryCard(myPlayers)}
         <div class="card">
@@ -978,6 +1014,28 @@ const App = (() => {
             <div class="table-wrap">${renderPlayerTable(myPlayers.slice().sort((a,b)=>b.o-a.o).slice(0,12), false)}</div>
             <div style="text-align:right;margin-top:6px"><a href="#" class="muted" style="font-size:12px" onclick="App.renderView('roster');return false">查看全部名单 →</a></div>
         </div>`;
+    }
+
+    // AI 报价收件箱卡片（有未处理报价时显示）
+    function renderOfferInboxCard() {
+        const offers = state.pendingOffers || [];
+        if (offers.length === 0) return "";
+        const rows = offers.map(o => `
+            <tr>
+                <td>${teamLogo(o.from, 18)} ${teamAbbr(o.from)}</td>
+                <td style="font-size:12px">${o.give.map(p => `${p.n}(${p.o})`).join("、")}</td>
+                <td style="font-size:12px">${o.want.map(p => `${p.n}(${p.o})`).join("、")}</td>
+                <td class="num">${Math.max(0, o.expiresDay - state.currentDay)}天</td>
+                <td><button class="btn btn-sm btn-primary" data-offerview="${o.id}">审阅</button></td>
+            </tr>`).join("");
+        return `<div class="card" style="border:1px solid rgba(212,175,55,0.35)">
+            <div class="card-title">📩 交易报价 <span class="tag tag-rookie">${offers.length} 份待处理</span></div>
+            <div class="table-wrap"><table><thead><tr><th>来自</th><th>他们送出</th><th>他们想要</th><th class="num">剩余</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+        </div>`;
+    }
+
+    function unlockedAchCount() {
+        return Object.keys(state.achievements || {}).length;
     }
 
     // 伤兵卡片（Feature 2）
@@ -1567,6 +1625,11 @@ const App = (() => {
         const win = (res.winner === "home") === isHome;
         const log = { opp: oppId, myScore, oppScore, win, boxscore: res, isHome, day: state.currentDay };
         state.userGameLog.push(log);
+        // ---- 新系统挂钩：训练 tick / AI 主动报价 / 成就检查 ----
+        tickTraining();
+        maybeGenerateAIOffer();
+        expirePendingOffers();
+        checkAchievements("userGame", { game: log });
         return log;
     }
 
@@ -1610,6 +1673,435 @@ const App = (() => {
         s.gp++; s.min += line.min;
         s.pts += line.pts; s.reb += line.reb; s.ast += line.ast; s.stl += line.stl; s.blk += line.blk; s.tov += line.tov; s.pf += line.pf;
         s.fgm += line.fgm; s.fga += line.fga; s.tpm += line.tpm; s.tpa += line.tpa; s.ftm += line.ftm; s.fta += line.fta; s.oreb += line.oreb || 0;
+    }
+
+    // ============ 训练系统 ============
+    // 每 10 场比赛自动执行一轮训练：年轻且有潜力的球员按训练专项概率成长
+    // focus: balanced 均衡 / shooting 投篮 / defense 防守 / playmaking 组织 / rebounding 篮板 / conditioning 体能
+    const TRAINING_INTERVAL = 10;
+    const TRAINING_FOCUS_DEFS = [
+        { val: "balanced",    label: "均衡训练", desc: "各项技能小概率全面提升" },
+        { val: "shooting",    label: "投篮特训", desc: "投篮+球商，培养得分手" },
+        { val: "defense",     label: "防守特训", desc: "防守+运动，打造铁血防线" },
+        { val: "playmaking",  label: "组织特训", desc: "传球+球商，培养发动机" },
+        { val: "rebounding",  label: "篮板特训", desc: "篮板+内线，统治禁区" },
+        { val: "conditioning", label: "体能康复", desc: "加速伤病恢复，不涨能力" },
+    ];
+
+    function tickTraining() {
+        if (!state.training) state.training = { focus: "balanced", gamesSinceSession: 0 };
+        state.training.gamesSinceSession++;
+        if (state.training.gamesSinceSession < TRAINING_INTERVAL) return;
+        state.training.gamesSinceSession = 0;
+        const summary = applyTrainingSession();
+        if (summary) toast(`💪 本轮训练（${trainingFocusLabel()}）：${summary}`, "", 4200);
+    }
+
+    function trainingFocusLabel() {
+        const d = TRAINING_FOCUS_DEFS.find(x => x.val === (state.training && state.training.focus));
+        return d ? d.label : "均衡训练";
+    }
+
+    // 执行一轮训练，返回汇总文案（如 "东契奇 投篮+1、文班亚马 防守+1"）
+    function applyTrainingSession() {
+        const myId = state.manager.teamId;
+        const focus = state.training.focus;
+        const ups = [];
+        if (focus === "conditioning") {
+            // 体能康复：受伤球员恢复天数 -2
+            myId && state.teamsPlayers[myId].forEach(p => {
+                if (p.injured && p.injured > 0) {
+                    p.injured = Math.max(0, p.injured - 2);
+                    if (p.injured === 0) ups.push(`${p.n} 伤愈复出`);
+                }
+            });
+            return ups.length ? ups.join("、") : "";
+        }
+
+        // 技能成长映射：专项 → [技能, 技能]
+        const skillMap = {
+            balanced:   [["sh"],["ins"],["pa"],["de"],["re"],["iq"]],
+            shooting:   [["sh"],["iq"]],
+            defense:    [["de"],["at"]],
+            playmaking: [["pa"],["iq"]],
+            rebounding: [["re"],["ins"]],
+        };
+        const targets = skillMap[focus] || skillMap.balanced;
+        const prob = focus === "balanced" ? 0.30 : 0.55; // 专项概率更高
+
+        state.teamsPlayers[myId].forEach(p => {
+            // 年轻且未达潜力上限才可能成长（29 岁以下）
+            if (p.a > 29) return;
+            if ((p.pot || p.o) <= p.o) return;
+            targets.forEach(([skill]) => {
+                if (Math.random() < prob && p[skill] < 99) {
+                    p[skill] = Math.min(99, p[skill] + 1);
+                    // 技能上涨有概率带动总评（年轻球员更高概率）
+                    const ovrProb = p.a <= 23 ? 0.75 : (p.a <= 26 ? 0.55 : 0.35);
+                    if (Math.random() < ovrProb && p.o < (p.pot || p.o)) {
+                        p.o = Math.min(p.pot || 99, p.o + 1);
+                    }
+                    if (ups.length < 4) ups.push(`${p.n} ${skillLabelMap(skill)}+1`);
+                }
+            });
+        });
+        return ups.length ? ups.join("、") : "";
+    }
+
+    const SKILL_LABELS = { sh: "投篮", ins: "内线", pa: "传球", de: "防守", re: "篮板", at: "运动", iq: "球商" };
+    function skillLabelMap(k) { return SKILL_LABELS[k] || k; }
+
+    // 训练方向设置弹窗：点击仪表盘训练标签打开
+    function showTrainingModal() {
+        const cur = (state.training && state.training.focus) || "balanced";
+        const cells = TRAINING_FOCUS_DEFS.map(d => `
+            <div class="train-option ${d.val === cur ? 'active' : ''}" data-focus="${d.val}" style="${d.val === cur ? '' : 'cursor:pointer'}">
+                <div class="train-label">${d.label}${d.val === cur ? ' <span class="tag tag-rookie">当前</span>' : ''}</div>
+                <div class="muted" style="font-size:12px">${d.desc}</div>
+                <div class="muted" style="font-size:11px;margin-top:4px">
+                    ${d.val === "conditioning" ? "适合伤病潮期间" : `每 ${TRAINING_INTERVAL} 场训练一次`}
+                </div>
+            </div>
+        `).join("");
+        showModal(`
+            <div class="modal-title">💪 球队训练</div>
+            <div class="muted" style="font-size:12px;margin-bottom:12px">选择训练方向，每 ${TRAINING_INTERVAL} 场比赛自动执行一轮训练（29 岁以下球员可成长，专项成长率更高）</div>
+            <div class="train-grid">${cells}</div>
+        `);
+        document.querySelectorAll(".train-option").forEach(el => {
+            el.addEventListener("click", () => {
+                state.training.focus = el.dataset.focus;
+                closeModal();
+                toast(`💪 训练方向已切换为「${trainingFocusLabel()}」`, "success");
+                renderAll();
+                autoSave();
+            });
+        });
+    }
+
+    // ============ AI 主动交易报价 ============
+    // 每场用户比赛后概率触发：AI 球队按自身需求构造报价（对我方球员感兴趣），
+    // 存入收件箱，仪表盘展示，10 天后过期
+    const AI_OFFER_CHANCE = 0.07;   // 每场 ~7%，一赛季约 5-6 份报价
+    const AI_OFFER_TTL = 10;        // 报价有效期（天）
+    const AI_OFFER_MAX_PENDING = 3; // 收件箱上限
+
+    function maybeGenerateAIOffer() {
+        if (state.phase !== "regular") return;
+        if (state.pendingOffers.length >= AI_OFFER_MAX_PENDING) return;
+        if (Math.random() > AI_OFFER_CHANCE) return;
+
+        const myId = state.manager.teamId;
+        const myPlayers = state.teamsPlayers[myId];
+        // 我方有交易价值球员才有报价意义（排除纯填充球员）
+        const myAssets = myPlayers.filter(p => !p.isFiller && p.o >= 72);
+        if (myAssets.length === 0) return;
+
+        // 随机选一支 AI 球队
+        const others = state.teams.filter(t => t.id !== myId);
+        const aiTeam = others[randInt(0, others.length - 1)];
+        const aiPlayers = state.teamsPlayers[aiTeam.id];
+        // AI 送出的筹码：非填充、72+，最多 2 人
+        const aiAssets = aiPlayers.filter(p => !p.isFiller && p.o >= 72);
+        if (aiAssets.length === 0) return;
+
+        // 选定我方被求购球员（AI 感兴趣的：价值最高的有更高概率被盯上）
+        myAssets.sort((a, b) => TradeEngine.playerValue(b) - TradeEngine.playerValue(a));
+        const target = myAssets[Math.min(myAssets.length - 1, randInt(0, 3))];
+        const targetVal = TradeEngine.playerValue(target);
+
+        // AI 组合筹码：找 1-2 名球员，总价值落在目标价值的 0.82 ~ 1.08（AI 略占便宜或对半）
+        shuffleArrLocal(aiAssets);
+        const give = [];
+        let giveVal = 0;
+        for (const cand of aiAssets) {
+            if (give.length >= 2) break;
+            const v = TradeEngine.playerValue(cand);
+            if (giveVal + v <= targetVal * 1.08) { give.push(cand); giveVal += v; }
+        }
+        if (give.length === 0) return;
+        // 筹码价值过低（< 0.75×）说明凑不出匹配包，放弃
+        if (giveVal < targetVal * 0.75) return;
+
+        // 薪资合规（AI 视角：送出 give 收到 target）
+        const salCheck = TradeEngine.validateSalary(aiPlayers, give, [target]);
+        if (!salCheck.valid) return;
+        // AI 自身评估：必须觉得值得（score >= 0.5，比 AI 间交易阈值略高）
+        const aiEval = TradeEngine.evaluateTradeForTeam(aiPlayers, give, [target], {
+            record: { winRate: ((state.records[aiTeam.id] || {}).win || 0) / 82 },
+        });
+        if (!aiEval || aiEval.score < 0.5) return;
+        // 名单人数检查：我方收 1 送 1 → 不变；AI 同理；AI give 2 收 1 → AI -1（>=14 ok）
+        const aiAfter = aiPlayers.length - give.length + 1;
+        if (aiAfter < 14) return;
+
+        state.pendingOffers.push({
+            id: `offer_${Date.now()}_${randInt(0, 9999)}`,
+            from: aiTeam.id,
+            give,               // AI 送出
+            want: [target],     // AI 想要
+            day: state.currentDay,
+            expiresDay: state.currentDay + AI_OFFER_TTL,
+        });
+        toast(`📩 ${teamAbbr(aiTeam.id)} 向你发来交易报价（${give.map(p => p.n).join("、")} ⇄ ${target.n}）`, "warning", 5000);
+    }
+
+    // 过期报价清理（在每日推进时调用）
+    function expirePendingOffers() {
+        if (!state.pendingOffers.length) return;
+        const before = state.pendingOffers.length;
+        state.pendingOffers = state.pendingOffers.filter(o => o.expiresDay > state.currentDay);
+        if (state.pendingOffers.length < before) {
+            toast("⌛ 一份交易报价已过期", "", 2600);
+        }
+    }
+
+    // 接受 AI 报价：执行交易（give → 我队，want → AI 队）
+    function acceptAIOffer(offerId) {
+        const offer = state.pendingOffers.find(o => o.id === offerId);
+        if (!offer) { toast("报价不存在或已过期", "error"); return; }
+        const myId = state.manager.teamId;
+        const myPlayers = state.teamsPlayers[myId];
+        const aiPlayers = state.teamsPlayers[offer.from];
+        // 读档后 offer 内球员是序列化拷贝，须按 id 从当前名单重新解析引用
+        const give = offer.give.map(p => aiPlayers.find(x => x.id === p.id)).filter(Boolean);
+        const want = offer.want.map(p => myPlayers.find(x => x.id === p.id)).filter(Boolean);
+        if (give.length !== offer.give.length || want.length !== offer.want.length) {
+            toast("报价球员已变动，无法执行", "error"); removeOffer(offerId); renderAll(); return;
+        }
+        // 交易执行前二次校验名单人数与薪资（球员可能已因其他交易变动）
+        if (myPlayers.length - want.length + give.length < 14) { toast("名单人数不足，无法接受", "error"); return; }
+        const salRecheck = TradeEngine.validateSalary(myPlayers, want, give);
+        if (!salRecheck.valid) { toast(`薪资不合规：${salRecheck.reason}`, "error"); return; }
+
+        TradeEngine.executeTradeWithIds(myPlayers, aiPlayers, want.slice(), give.slice(), myId, offer.from, state.year);
+        // 记入交易日志与计数
+        state.tradeCount = (state.tradeCount || 0) + 1;
+        state.tradeLog.push({
+            day: offer.day, teamA: offer.from, teamB: myId,
+            outgoingA: give, outgoingB: want, blockbuster: give.some(p => p.o >= 85) || want.some(p => p.o >= 85),
+        });
+        removeOffer(offerId);
+        closeModal();
+        toast(`✅ 已与 ${teamAbbr(offer.from)} 完成交易`, "success");
+        checkAchievements("trade", { incoming: give });
+        renderAll();
+        autoSave();
+    }
+
+    function rejectAIOffer(offerId) {
+        removeOffer(offerId);
+        closeModal();
+        toast("已拒绝报价");
+        renderAll();
+        autoSave();
+    }
+
+    function removeOffer(offerId) {
+        state.pendingOffers = state.pendingOffers.filter(o => o.id !== offerId);
+    }
+
+    function shuffleArrLocal(arr) {
+        for (let i = arr.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [arr[i], arr[j]] = [arr[j], arr[i]];
+        }
+    }
+
+    // 报价审阅弹窗：双方筹码 + 实力/薪资变化预览
+    function showAIOfferModal(offerId) {
+        const offer = state.pendingOffers.find(o => o.id === offerId);
+        if (!offer) { toast("报价不存在或已过期", "error"); return; }
+        const myId = state.manager.teamId;
+        const myPlayers = state.teamsPlayers[myId];
+        const aiPlayers = state.teamsPlayers[offer.from];
+
+        // 交易前后实力/薪资预览
+        const ratingBefore = SimEngine.teamRating(myPlayers);
+        const ratingAfter = SimEngine.teamRating([...myPlayers.filter(p => !offer.want.includes(p)), ...offer.give]);
+        const salBefore = TradeEngine.teamSalary(myPlayers);
+        const salAfter = salBefore - TradeEngine.outgoingSalary(offer.want) + TradeEngine.outgoingSalary(offer.give);
+        const dR = ratingAfter - ratingBefore;
+        const dS = salAfter - salBefore;
+
+        const fmtPlayer = p => `<div class="offer-player">
+            <div class="player-ovr ${ovrClass(p.o)}">${p.o}</div>
+            <div style="min-width:0">
+                <div style="font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.n}</div>
+                <div class="muted" style="font-size:11px"><span class="pos-${p.p}">${p.p}</span> · ${p.a}岁 · $${p.sal.toFixed(1)}M</div>
+            </div>
+        </div>`;
+
+        const daysLeft = Math.max(0, offer.expiresDay - state.currentDay);
+        showModal(`
+            <div class="modal-title">📩 交易报价 · ${teamLogo(offer.from, 20)} ${teamAbbr(offer.from)}</div>
+            <div class="muted" style="font-size:12px;margin-bottom:12px">${daysLeft} 天后过期 · ${teamName(offer.from)} 提议以下交易</div>
+            <div class="offer-box">
+                <div class="offer-side">
+                    <div class="offer-side-title">你将获得</div>
+                    ${offer.give.map(fmtPlayer).join("")}
+                </div>
+                <div class="offer-arrow">⇄</div>
+                <div class="offer-side">
+                    <div class="offer-side-title">他们将带走</div>
+                    ${offer.want.map(fmtPlayer).join("")}
+                </div>
+            </div>
+            <div class="stat-grid" style="margin-top:12px">
+                <div class="stat-box"><div class="value" style="color:${dR>=0?'var(--success)':'var(--nba-red-light)'}">${dR>=0?'+':''}${dR.toFixed(1)}</div><div class="label">球队实力变化</div></div>
+                <div class="stat-box"><div class="value" style="color:${dS<=0?'var(--success)':'var(--nba-red-light)'}">${dS>=0?'+':''}$${dS.toFixed(1)}M</div><div class="label">薪资变化</div></div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn" style="margin-right:auto" onclick="App.rejectAIOffer('${offer.id}')">✕ 拒绝</button>
+                <button class="btn btn-primary" onclick="App.acceptAIOffer('${offer.id}')">✔ 接受交易</button>
+            </div>
+        `);
+    }
+
+    // ============ 赛季模拟器（蒙特卡洛夺冠概率） ============
+    // 用球队实力评分 + 主场优势的 logistic 胜率快速模拟剩余赛季 × N 次
+    // （纯数学模拟，不含球员级统计，300 次 < 100ms）
+    function runTitleOdds(sims) {
+        sims = sims || 300;
+        const myId = state.manager.teamId;
+        const N_GAMES = 82;
+
+        // 缓存各队实力与当前战绩
+        const ratings = {}, wins = {}, losses = {};
+        state.teams.forEach(t => {
+            ratings[t.id] = SimEngine.teamRating(state.teamsPlayers[t.id]);
+            const r = state.records[t.id];
+            wins[t.id] = r.win; losses[t.id] = r.loss;
+        });
+
+        // 剩余赛程（从 currentDay 起，去重后每队剩余场次数已由 schedule 保证）
+        const remaining = state.schedule.slice(state.currentDay);
+
+        const confOf = {}; state.teams.forEach(t => confOf[t.id] = t.conf);
+        const logistic = x => 1 / (1 + Math.exp(-x));
+        const HOME_EDGE = 1.6; // 主场优势折算评分加成
+
+        let titleCount = 0, playoffsCount = 0, winSum = 0;
+        const titleTally = {}; // 各队夺冠次数
+        const winTally = {};   // 各队预计胜场总和
+
+        for (let s = 0; s < sims; s++) {
+            // 每次模拟从当前战绩出发
+            const w = { ...wins }, l = { ...losses };
+            remaining.forEach(day => {
+                day.forEach(g => {
+                    const diff = (ratings[g.home] + HOME_EDGE) - ratings[g.away];
+                    const pHome = logistic(diff / 7.0); // 评分差 7 分约 67% 胜率
+                    if (Math.random() < pHome) { w[g.home]++; l[g.away]++; }
+                    else { w[g.away]++; l[g.home]++; }
+                });
+            });
+
+            // 按最终战绩排东西部前 8
+            const seed = conf => state.teams.filter(t => t.conf === conf)
+                .map(t => ({ id: t.id, wr: w[t.id] / (w[t.id] + l[t.id] || 1) }))
+                .sort((a, b) => b.wr - a.wr).slice(0, 8);
+
+            if (seed("East").some(e => e.id === myId) || seed("West").some(e => e.id === myId)) playoffsCount++;
+            winSum += w[myId];
+
+            // 季后赛：bo7，按种子 1v8 4v5 3v6 2v7
+            const champ = simulateBracket(seed("East"), seed("West"), ratings, logistic);
+            titleTally[champ] = (titleTally[champ] || 0) + 1;
+            if (champ === myId) titleCount++;
+        }
+
+        // 汇总
+        const myProjected = (winSum / sims).toFixed(1);
+        const favorites = Object.entries(titleTally)
+            .map(([id, n]) => ({ id, pct: n / sims }))
+            .sort((a, b) => b.pct - a.pct).slice(0, 5);
+
+        return {
+            sims,
+            titlePct: titleCount / sims,
+            playoffsPct: playoffsCount / sims,
+            projectedWins: myProjected,
+            favorites,
+        };
+    }
+
+    // 模拟一个季后赛 bracket（东西部各 8 队种子）
+    function simulateBracket(east, west, ratings, logistic) {
+        const seriesWin = (a, b) => {
+            // bo7：每场胜率 logistic((ratingA - ratingB + 0.5) / 7)，0.5 微弱主场补偿取平均
+            const pA = logistic((ratings[a.id] - ratings[b.id] + 0.3) / 7.0);
+            let wa = 0;
+            for (let g = 0; g < 7; g++) { if (Math.random() < pA) wa++; if (wa === 4 || g - wa + 1 === 4) break; }
+            return wa === 4 ? a : b;
+        };
+        let eR = east.slice(), wR = west.slice();
+        while (eR.length > 1) {
+            const next = [];
+            for (let i = 0; i < eR.length / 2; i++) next.push(seriesWin(eR[i], eR[eR.length - 1 - i]));
+            eR = next;
+        }
+        while (wR.length > 1) {
+            const next = [];
+            for (let i = 0; i < wR.length / 2; i++) next.push(seriesWin(wR[i], wR[wR.length - 1 - i]));
+            wR = next;
+        }
+        return seriesWin(eR[0], wR[0]).id;
+    }
+
+    // 模拟器结果弹窗
+    function showTitleOddsModal() {
+        const myId = state.manager.teamId;
+        let result;
+        try {
+            result = runTitleOdds(300);
+        } catch (e) {
+            console.error("[TitleOdds] 模拟失败:", e);
+            toast("模拟失败：" + e.message, "error");
+            return;
+        }
+        const pct = v => (v * 100).toFixed(1) + "%";
+        const favRows = result.favorites.map((f, i) => {
+            const isMe = f.id === myId;
+            return `<tr style="${isMe?'background:rgba(29,66,138,0.25);font-weight:700;':''}">
+                <td class="num">${i + 1}</td>
+                <td>${teamLogo(f.id, 18)} ${teamName(f.id)}${isMe?'（你）':''}</td>
+                <td class="num"><b>${pct(f.pct)}</b></td>
+                <td><div class="odds-bar"><div class="odds-fill ${i === 0 ? 'top' : ''}" style="width:${Math.max(2, f.pct * 100)}%"></div></div></td>
+            </tr>`;
+        }).join("");
+        showModal(`
+            <div class="modal-title">🎲 赛季模拟器</div>
+            <div class="muted" style="font-size:12px;margin-bottom:12px">基于当前阵容实力与剩余赛程，蒙特卡洛模拟 ${result.sims} 次</div>
+            <div class="stat-grid">
+                <div class="stat-box"><div class="value" style="color:var(--gold)">${pct(result.titlePct)}</div><div class="label">夺冠概率</div></div>
+                <div class="stat-box"><div class="value">${pct(result.playoffsPct)}</div><div class="label">进季后赛概率</div></div>
+                <div class="stat-box"><div class="value">${result.projectedWins}<span class="muted" style="font-size:14px">胜</span></div><div class="label">预计常规赛战绩</div></div>
+            </div>
+            <div class="card-title mt-20">夺冠热门榜</div>
+            <div class="table-wrap"><table><thead><tr><th class="num">#</th><th>球队</th><th class="num">概率</th><th style="width:38%"></th></tr></thead><tbody>${favRows}</tbody></table></div>
+            <div class="modal-actions"><button class="btn btn-primary" onclick="App.closeModal()">关闭</button></div>
+        `);
+    }
+
+    // ============ 成就墙弹窗 ============
+    function showAchievementsModal() {
+        const list = AchievementEngine.overview(state);
+        const unlocked = list.filter(a => a.unlocked);
+        const cells = list.map(a => `
+            <div class="ach-cell ${a.unlocked ? 'unlocked' : 'locked'}">
+                <div class="ach-icon">${a.unlocked ? a.icon : '🔒'}</div>
+                <div class="ach-name">${a.name}</div>
+                <div class="ach-desc">${a.desc}</div>
+                ${a.unlocked ? `<div class="ach-time">${a.unlockedAt.year}-${a.unlockedAt.year + 1} 赛季达成</div>` : ''}
+            </div>
+        `).join("");
+        showModal(`
+            <div class="modal-title">🏆 经理成就 <span class="muted" style="font-size:13px;font-weight:400">${unlocked.length}/${list.length}</span></div>
+            <div class="ach-progress"><div class="ach-progress-fill" style="width:${(unlocked.length / list.length * 100).toFixed(0)}%"></div></div>
+            <div class="ach-grid">${cells}</div>
+            <div class="modal-actions"><button class="btn btn-primary" onclick="App.closeModal()">关闭</button></div>
+        `);
     }
 
     function updateStandings() {
@@ -1669,6 +2161,7 @@ const App = (() => {
         tagTeamAward(awards.allDefSecondDetail, '最佳防守二阵');
         tagTeamAward(awards.allRookieFirstDetail, '新秀一阵');
         tagTeamAward(awards.allRookieSecondDetail, '新秀二阵');
+        checkAchievements("seasonAwards", { awards });
         showAwardsModal(awards);
     }
 
@@ -1750,6 +2243,7 @@ const App = (() => {
             exits: {},
         };
         state.phase = "playoffs";
+        checkAchievements("playoffsStart", {});
         toast("常规赛结束！季后赛打响 🏆", "gold");
         renderAll();
     }
@@ -1816,6 +2310,8 @@ const App = (() => {
                 // 分区决赛结束 → 评选东西部 MVP（基于本联盟前 3 轮季后赛数据，从分区冠军中选）
                 po.eastChamp = po.eastResults[0].winner;
                 po.westChamp = po.westResults[0].winner;
+                // 成就：打进分区决赛（最终四强）= 在本轮对阵中
+                checkAchievements("playoffsRound", { isConfFinals: true });
                 const eastTeamIds = po.east.map(p => [p.high.teamId, p.low.teamId]).flat();
                 const westTeamIds = po.west.map(p => [p.high.teamId, p.low.teamId]).flat();
                 po.eastConfMVP = SeasonEngine.computeConferenceMVP(po.eastAllRounds, eastTeamIds, po.eastChamp.teamId);
@@ -1881,6 +2377,7 @@ const App = (() => {
             }
             const myWon = champ.teamId === myId;
             showFinalsModal(po.finalsResult, myWon, fmvp);
+            checkAchievements("finalsEnd", { championTeamId: champ.teamId });
             state.phase = "offseason";
         }
         renderAll();
@@ -2183,6 +2680,7 @@ const App = (() => {
         state.teamsPlayers[myId].push(rookie);
         state.players.push(rookie);
         toast(`你用 #${state.draftPick+1} 顺位选中 ${rookie.n}!`, "success");
+        checkAchievements("draft", { player: rookie, pick: state.draftPick + 1 });
         state.draftPick++;
         // 玩家选完后，AI 自动连续选到下一个玩家顺位或结束（同步执行，避免 setTimeout 竞态）
         aiDraftUntilMyTurnOrEnd();
@@ -2738,7 +3236,9 @@ const App = (() => {
             isPlayer: true,
         };
         state.tradeLog.push(snapshot);
+        state.tradeCount = (state.tradeCount || 0) + 1;
         toast(`交易完成! 获得 ${tradeState.theirOut.map(p=>p.n).join(", ")}`, "success");
+        checkAchievements("trade", { incoming: tradeState.theirOut.slice() });
         tradeState = { partner: null, myOut: [], theirOut: [] };
         renderAll();
         autoSave();
@@ -2763,6 +3263,7 @@ const App = (() => {
                 state.players.push(player);
             }
             toast(`签约 ${player.n} (${player.o} OVR)`, "success");
+            checkAchievements("signing", { player });
             renderAll();
             autoSave();
         } else {
@@ -2866,6 +3367,17 @@ const App = (() => {
         const psCmpBtn = document.getElementById("ps-compare-btn");
         if (psCmpBtn) psCmpBtn.addEventListener("click", () => {
             if (playerCompareIds.length === 2) showPlayerCompare(playerCompareIds[0], playerCompareIds[1]);
+        });
+        // 仪表盘：夺冠概率模拟器 / 成就墙
+        const oddsBtn = document.getElementById("title-odds-btn");
+        if (oddsBtn) oddsBtn.addEventListener("click", showTitleOddsModal);
+        const achBtn = document.getElementById("ach-btn");
+        if (achBtn) achBtn.addEventListener("click", showAchievementsModal);
+        const trainBtn = document.getElementById("training-btn");
+        if (trainBtn) trainBtn.addEventListener("click", showTrainingModal);
+        // AI 报价收件箱：审阅按钮
+        document.querySelectorAll("[data-offerview]").forEach(el => {
+            el.addEventListener("click", () => showAIOfferModal(el.dataset.offerview));
         });
     }
 
@@ -3393,13 +3905,13 @@ const App = (() => {
     }
 
     // ============ 通知 ============
-    function toast(msg, type = "") {
+    function toast(msg, type = "", duration = 3200) {
         const c = document.getElementById("toast-container");
         const el = document.createElement("div");
         el.className = "toast " + type;
         el.textContent = msg;
         c.appendChild(el);
-        setTimeout(() => { el.style.opacity = "0"; el.style.transition = "opacity 0.4s"; setTimeout(() => el.remove(), 400); }, 3200);
+        setTimeout(() => { el.style.opacity = "0"; el.style.transition = "opacity 0.4s"; setTimeout(() => el.remove(), 400); }, duration);
     }
 
     function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
@@ -3408,6 +3920,7 @@ const App = (() => {
         init, renderView, advance, fastAdvance, closeModal, releasePlayer, showMoreMenu,
         loadState, showSaveManager, showTacticsModal, showAwardsHistory,
         setAwardsView, setAwardsTab, showPlayerDetail, showPlayerCompare,
+        acceptAIOffer, rejectAIOffer, showTrainingModal,
         get state() { return state; },
     };
 })();

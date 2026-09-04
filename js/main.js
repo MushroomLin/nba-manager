@@ -206,6 +206,76 @@
     // 一键快进按钮：常规赛一键模拟至季后赛；季后赛/总决赛一键模拟本轮
     document.getElementById("fast-btn").addEventListener("click", () => App.fastAdvance());
 
+    // ============ 键盘快捷键 ============
+    // Space/Enter 推进 · F 快进 · 1-9/0 切换页面 · ? 查看帮助 · Esc 关闭弹窗
+    const SHORTCUT_VIEWS = [
+        "dashboard", "roster", "trade", "freeagents",
+        "schedule", "standings", "stats", "draft", "league", "playersearch",
+    ];
+
+    function isGameActive() {
+        return document.getElementById("game-screen").classList.contains("active");
+    }
+
+    function isModalOpen() {
+        return document.getElementById("modal-overlay").classList.contains("active");
+    }
+
+    function isTyping(e) {
+        const t = e.target;
+        if (!t) return false;
+        const tag = (t.tagName || "").toLowerCase();
+        return tag === "input" || tag === "textarea" || tag === "select" || t.isContentEditable;
+    }
+
+    function showShortcutsHelp() {
+        document.getElementById("modal-box").innerHTML = `
+            <div class="card-title" style="font-size:18px">⌨️ 键盘快捷键</div>
+            <table class="player-table" style="margin-top:12px"><tbody>
+                <tr><td><kbd>Space</kbd> / <kbd>Enter</kbd></td><td>推进（下一场比赛 / 下一阶段）</td></tr>
+                <tr><td><kbd>F</kbd></td><td>一键快进（至季后赛 / 模拟至结束）</td></tr>
+                <tr><td><kbd>1</kbd> - <kbd>9</kbd></td><td>切换页面（仪表盘 → 联盟）</td></tr>
+                <tr><td><kbd>0</kbd></td><td>球员搜索</td></tr>
+                <tr><td><kbd>Esc</kbd></td><td>关闭弹窗</td></tr>
+                <tr><td><kbd>?</kbd></td><td>显示本帮助</td></tr>
+            </tbody></table>
+            <p class="muted" style="font-size:12px;margin-top:10px">提示：在输入框中输入时快捷键不生效。</p>`;
+        document.getElementById("modal-overlay").classList.add("active");
+    }
+
+    document.addEventListener("keydown", (e) => {
+        // Esc：任何界面下关闭弹窗
+        if (e.key === "Escape") {
+            if (isModalOpen()) { App.closeModal(); e.preventDefault(); }
+            return;
+        }
+        // 其余快捷键仅在游戏主界面、无弹窗、非输入状态生效
+        if (!isGameActive() || isModalOpen() || isTyping(e)) return;
+        if (e.ctrlKey || e.altKey || e.metaKey) return;
+
+        if (e.key === " " || e.key === "Enter") {
+            const btn = document.getElementById("advance-btn");
+            if (!btn.disabled) { App.advance(); e.preventDefault(); }
+            return;
+        }
+        if (e.key === "f" || e.key === "F") {
+            const btn = document.getElementById("fast-btn");
+            if (!btn.disabled) { App.fastAdvance(); e.preventDefault(); }
+            return;
+        }
+        if (e.key === "?") {
+            showShortcutsHelp();
+            e.preventDefault();
+            return;
+        }
+        if (/^[0-9]$/.test(e.key)) {
+            // "1"-"9" → 前 9 个页面，"0" → 第 10 个页面（球员搜索）
+            const idx = e.key === "0" ? 9 : +e.key - 1;
+            const view = SHORTCUT_VIEWS[idx];
+            if (view) { App.renderView(view); e.preventDefault(); }
+        }
+    });
+
     // 模态框点击外部关闭
     document.getElementById("modal-overlay").addEventListener("click", e => {
         if (e.target.id === "modal-overlay") App.closeModal();
