@@ -2785,8 +2785,11 @@ const App = (() => {
         if (state.freeAgents && state.freeAgents.length > 0) {
             const faResult = SeasonEngine.ageFreeAgents(state);
             // 从 state.players 中移除退役的自由球员
-            if (faResult.retired > 0 && state.players) {
-                const retiredFaIds = new Set(state.freeAgents.filter(p => p.isRetired).map(p => p.id));
+            // 修复：原实现过滤 state.freeAgents 中的 isRetired 球员，但 ageFreeAgents
+            // 返回时 freeAgents 已被重赋值为幸存者，永远匹配不到人，导致退役 FA
+            // 以 isRetired=true 的"僵尸"状态永久滞留 state.players（存档膨胀）
+            if (faResult.retiredIds && faResult.retiredIds.length > 0 && state.players) {
+                const retiredFaIds = new Set(faResult.retiredIds);
                 state.players = state.players.filter(p => !retiredFaIds.has(p.id));
             }
         }

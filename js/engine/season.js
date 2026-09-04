@@ -177,6 +177,18 @@ const SeasonEngine = (() => {
         players.forEach(p => {
             // 自由球员由 ageFreeAgents 单独处理，此处跳过避免双重老化
             if (p.isFreeAgent) return;
+            // 修复：刚入行的新秀（今年选秀/落选签约，一场未打）不参与本期老化与成长。
+            // 原逻辑在此处给新秀 +1 岁并提前向潜力成长，导致新秀赛季年龄/能力双重虚高
+            // （如 2003 勒布朗以真实数据 19 岁 o87 入行，开赛却变成 20 岁 o91+）。
+            // 新秀的真实年龄与评分已由选秀数据给出，首个成长期应是其新秀赛季结束后的休赛期。
+            // 注意：isRookie 会在本次调用的第四阶段清除，故此处 isRookie===true
+            // 仅可能是"刚入行"的新秀（老存档中已入行新秀的 isRookie 均已被清除）。
+            if (p.isRookie) {
+                // yrsInLeague 语义保持不变：新秀赛季 = 第 1 年（新秀合同/淘汰机制依赖此约定）
+                if (p.yrsInLeague == null) p.yrsInLeague = 0;
+                p.yrsInLeague += 1;
+                return;
+            }
             const before = { ...p };
             // 年龄老化
             p.a += 1;
@@ -222,10 +234,8 @@ const SeasonEngine = (() => {
             // 超巨保护：ovr≥90 的球员单季衰退不超过 -6，延长巅峰期但允许自然衰退
             // 修复 v2：原 -5 保护仍让 ovr90 后期反弹至 24-29，放宽至 -6 加快超巨淡出
             if (p.o >= 90 && delta < -6) delta = -6;
-            // 新秀额外成长（仅对刚结束的新秀赛季生效，之后 isRookie 会被清掉）
-            // 修复：randInt(1, 3) 期望 +2 叠加成长率导致 MIP ovrΔ 普遍 10-17（期望 3-8）
-            // 降至 randInt(0, 2) 期望 +1，配合下方单季成长上限 8
-            if (p.isRookie && p.a <= 23) delta += randInt(0, 2);
+            // （原"新秀额外成长"分支已移除：入行新秀在第一阶段被跳过，isRookie
+            //   在同一次调用的第四阶段即被清除，该分支对任何球员都不再可能触发）
             // 修复：单季成长硬上限，避免高潜新秀单季 +10 以上跳变（MIP ovrΔ 离谱根因）
             // 真实 NBA 单季最大进步约 +8-9（如恩比德新秀年），上限设 9 平衡超巨培养与防跳变
             if (delta > 9) delta = 9;
@@ -515,18 +525,22 @@ const SeasonEngine = (() => {
     // 规则：自由球员年龄+1、能力衰退；年龄过大或能力过低者退役移除
     // 避免自由市场堆积大量高龄低能球员
     function ageFreeAgents(state) {
-        if (!state.freeAgents || state.freeAgents.length === 0) return { aged: 0, retired: 0 };
+        if (!state.freeAgents || state.freeAgents.length === 0) return { aged: 0, retired: 0, retiredIds: [] };
         let aged = 0, retiredCount = 0;
         const survivors = [];
+        const retiredIds = [];
         state.freeAgents.forEach(p => {
-            p.a += 1;
+            // 修复：刚落选入池的新秀（isRookie 且首次入池）一场未打，跳过本年老化，
+            // 与 offseasonProgression 对入行新秀的处理保持一致（避免双重老化）
+            const isFreshRookie = p.isRookie && !p.yearsInFreeAgency;
+            if (!isFreshRookie) p.a += 1;
             // 追踪在自由市场滞留的年数：滞留越久越难找到工作，退役概率递增
             // 修复：原逻辑只按年龄/能力判定退役，导致大量 27-33 岁 ovr 65-70 球员长期堆积
             if (p.yearsInFreeAgency == null) p.yearsInFreeAgency = 0;
             p.yearsInFreeAgency += 1;
             aged++;
             // 能力随年龄衰退（简化版）
-            if (p.a > 30) {
+            if (!isFreshRookie && p.a > 30) {
                 const delta = p.a > 36 ? randInt(-4, -1) : randInt(-2, 0);
                 p.o = Math.max(40, Math.min(99, p.o + delta));
                 const skills = ["ins","sh","pa","re","de","at","iq"];
@@ -561,6 +575,7 @@ const SeasonEngine = (() => {
             if (Math.random() < retireProb) {
                 p.isRetired = true;
                 retiredCount++;
+                retiredIds.push(p.id);
             } else {
                 // 薪资随能力重算（老将折扣）；滞留越久薪资越低（急切签约）
                 p.sal = Math.round(adjustSalaryByAge(p) * 10) / 10;
@@ -579,10 +594,11 @@ const SeasonEngine = (() => {
             toRemove.forEach(p => {
                 p.isRetired = true;
                 retiredCount++;
+                retiredIds.push(p.id);
             });
         }
         state.freeAgents = survivors;
-        return { aged, retired: retiredCount };
+        return { aged, retired: retiredCount, retiredIds };
     }
 
     // 签约自由球员（加入球队，需有名额且薪资空间/特例）

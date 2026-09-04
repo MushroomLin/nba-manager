@@ -30,6 +30,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zh_names import ZH_HIST
+from zh_names_extra import compose_zh
 
 import pandas as pd
 
@@ -74,6 +75,22 @@ def num(v, default=0.0):
     except Exception:
         return default
 
+def clean_name(v):
+    """清理球员名：CSV 中缺失名会读成 'nan Nene' / 'nan' 等脏值"""
+    if v is None or (isinstance(v, float) and math.isnan(v)): return ""
+    s = str(v).strip()
+    if s.lower() == "nan": return ""
+    # 前导/尾随的 nan 片段（'nan Nene' → 'Nene'）
+    while True:
+        low = s.lower()
+        if low.startswith("nan ") and not low == "nan ":
+            s = s[4:].strip()
+        elif low.endswith(" nan"):
+            s = s[:-4].strip()
+        else:
+            break
+    return s
+
 # ============================================================
 # 1. 加载球员档案（全时代）
 # ============================================================
@@ -82,8 +99,8 @@ def load_registry():
     df = pd.read_csv(INDEX_CSV, low_memory=False)
     for _, r in df.iterrows():
         pid = int(r["PERSON_ID"])
-        first = str(r.get("PLAYER_FIRST_NAME", "") or "").strip()
-        last = str(r.get("PLAYER_LAST_NAME", "") or "").strip()
+        first = clean_name(r.get("PLAYER_FIRST_NAME", ""))
+        last = clean_name(r.get("PLAYER_LAST_NAME", ""))
         name = (first + " " + last).strip()
         h_in = height_to_inches(r.get("HEIGHT"))
         reg[pid] = {
@@ -114,7 +131,7 @@ def load_seasons():
         gp = num(r["GP"])
         rec = {
             "id": pid,
-            "name": str(r["PLAYER_NAME"]).strip(),
+            "name": clean_name(r["PLAYER_NAME"]),
             "team": str(r["TEAM_ABBREVIATION"]).strip(),
             "age": num(r["AGE"]),
             "gp": gp,
@@ -136,7 +153,7 @@ def load_seasons():
             pid = int(r["player_id"])
             rec = {
                 "id": pid,
-                "name": str(r.get("player_name", "")).strip(),
+                "name": clean_name(r.get("player_name", "")),
                 "team": str(r.get("team_abbreviation", "")).strip(),
                 "age": num(r.get("age")),
                 "gp": num(r.get("gp")),
@@ -407,7 +424,8 @@ def main():
     for pid, fy in from_year.items():
         info = reg.get(pid, {})
         name = info.get("name") or name_by_id.get(pid, "")
-        zh = id2zh.get(pid) or ZH_HIST.get(name)
+        # 中文名: name_map(id→zh) → ZH_HIST(英文名) → compose_zh(名/姓组件组合)
+        zh = id2zh.get(pid) or ZH_HIST.get(name) or compose_zh(name)
         fy_final = info.get("from_year") or fy
         # index 的 from_year 可能比数据早（生涯早于1996），取 info 优先
         ly = last_year[pid]
