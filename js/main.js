@@ -1,22 +1,82 @@
 // 主入口：启动界面逻辑 + 全局事件绑定
 (function() {
     let selectedTeam = null;
+    let selectedSeason = 2026;
+
+    // ============ 历史赛季选择 ============
+    // 时代标签：给代表性赛季加一句时代注解，方便玩家挑选
+    const ERA_LABELS = {
+        1996: "乔丹公牛王朝", 1997: "公牛最后之舞", 1998: "停摆缩水赛季 · 邓肯驾临",
+        2002: "OK组合末章", 2003: "黄金一代", 2004: "草根活塞登顶",
+        2005: "纳什跑轰时代", 2007: "绿军三巨头", 2008: "科比两连冠起点",
+        2010: "热火三巨头", 2011: "停摆缩水赛季", 2014: "勇士王朝崛起",
+        2015: "73胜勇士赛季", 2018: "詹皇湖人时代", 2019: "新冠复赛赛季",
+        2022: "约基奇两连MVP", 2024: "SGA雷霆登顶", 2025: "文班全面爆发",
+    };
+
+    // 初始化赛季下拉框：2026-27（现役名单）+ 1996-97 ~ 2025-26（真实历史名单）
+    function initSeasonSelect() {
+        const sel = document.getElementById("season-select");
+        const hint = document.getElementById("season-hint");
+        if (!sel) return;
+        const years = HistoryEngine.isAvailable() ? HistoryEngine.availableYears() : null;
+        let html = `<option value="2026">2026-27 · 现役名单（默认）</option>`;
+        if (years) {
+            for (let y = years.last; y >= years.first; y--) {
+                const era = ERA_LABELS[y] ? ` · ${ERA_LABELS[y]}` : "";
+                html += `<option value="${y}">${y}-${String(y + 1).slice(2)}${era}</option>`;
+            }
+        }
+        sel.innerHTML = html;
+        sel.value = "2026";
+        updateSeasonHint();
+        sel.addEventListener("change", () => {
+            selectedSeason = +sel.value;
+            selectedTeam = null;
+            document.getElementById("start-game-btn").disabled = true;
+            updateSeasonHint();
+            // 重渲染当前联盟的球队网格（历史赛季会禁用不存在的球队并显示历史队名）
+            const activeConf = document.querySelector(".conf-tab.active");
+            renderTeamSelect(activeConf ? activeConf.dataset.conf : "East");
+        });
+
+        function updateSeasonHint() {
+            if (!hint) return;
+            if (+sel.value === 2026) {
+                hint.textContent = "";
+            } else {
+                const avail = HistoryEngine.teamsAvailable(+sel.value);
+                hint.textContent = `📖 历史模式：加载 ${sel.value}-${+sel.value + 1} 真实名单 · ${avail.size} 支球队可选`;
+            }
+        }
+    }
 
     // 渲染球队选择网格
+    // 历史赛季：显示历史队名（如 西雅图超音速），禁用该赛季尚不存在的球队
     function renderTeamSelect(conf) {
         const grid = document.getElementById("team-select-grid");
+        const isHistory = selectedSeason < 2026 && HistoryEngine.isAvailable();
+        const availTeams = isHistory ? HistoryEngine.teamsAvailable(selectedSeason) : null;
         const teams = window.TEAMS_DATA.filter(t => t.conf === conf);
-        grid.innerHTML = teams.map(t => `
-            <div class="team-select-card" data-team="${t.id}">
+        grid.innerHTML = teams.map(t => {
+            const lbl = isHistory ? HistoryEngine.teamLabel(t.id, selectedSeason) : null;
+            const city = lbl ? lbl.city : t.city;
+            const name = lbl ? lbl.name : t.name;
+            const disabled = isHistory && !availTeams.has(t.id);
+            const title = disabled ? "该赛季此球队尚未成立" : (lbl ? `${t.city}${t.name}（现名）` : "");
+            return `
+            <div class="team-select-card ${disabled ? 'unavailable' : ''}" data-team="${t.id}" ${disabled ? 'data-disabled="1"' : ''} title="${title}">
                 <div class="card-logo">
                     <img src="${t.logo}" class="team-logo" width="64" height="64" alt="${t.abbr}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='inline-flex'"><span class="team-logo-fallback" style="display:none;width:64px;height:64px;background:${t.color};color:#fff;border-radius:50%;align-items:center;justify-content:center;font-size:24px;font-weight:700">${t.abbr}</span>
                 </div>
                 <div class="abbr" style="color:${t.color}">${t.abbr}</div>
-                <div class="name">${t.city}${t.name}</div>
+                <div class="name">${city}${name}${disabled ? '<div class="na-tag">该赛季无此队</div>' : ''}</div>
             </div>
-        `).join("");
+        `;
+        }).join("");
         grid.querySelectorAll(".team-select-card").forEach(card => {
             card.addEventListener("click", () => {
+                if (card.dataset.disabled) return;
                 grid.querySelectorAll(".team-select-card").forEach(c => c.classList.remove("selected"));
                 card.classList.add("selected");
                 selectedTeam = card.dataset.team;
@@ -188,7 +248,7 @@
         const name = document.getElementById("manager-name").value.trim() || "GM";
         document.getElementById("startup-screen").classList.remove("active");
         document.getElementById("game-screen").classList.add("active");
-        App.init(name, selectedTeam);
+        App.init(name, selectedTeam, selectedSeason);
     });
 
     // 侧边导航（桌面）+ 底部导航（手机）
@@ -282,6 +342,7 @@
     });
 
     // 初始化默认显示东部
+    initSeasonSelect();
     renderTeamSelect("East");
     refreshContinueBox();
 })();

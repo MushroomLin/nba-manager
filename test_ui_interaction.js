@@ -67,6 +67,7 @@ const baseDir = path.join(__dirname, 'js');
 const load = rel => vm.runInContext(fs.readFileSync(path.join(baseDir, rel), 'utf8'), sandbox, { filename: rel });
 load('data/teams.js'); load('data/players.js'); load('data/rookies.js'); load('data/nba_stats.js');
 load('engine/simulation.js'); load('engine/trade.js'); load('engine/season.js'); load('engine/draft.js'); load('engine/save.js');
+load('engine/achievements.js');
 load('ui/app.js');
 
 const { App } = sandbox;

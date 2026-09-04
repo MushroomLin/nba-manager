@@ -8,7 +8,7 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>NBA 经理模拟器</title>
-    <link rel="stylesheet" href="css/style.css?v=20260904c">
+    <link rel="stylesheet" href="css/style.css?v=20260904d">
 </head>
 <body>
     <div id="app">
@@ -24,6 +24,11 @@
                         <button id="continue-btn" class="btn btn-primary" style="flex:1">▶ 继续游戏</button>
                         <button id="open-savemgr-btn" class="btn">📁 存档管理</button>
                     </div>
+                </div>
+                <div class="startup-step">
+                    <h2>开始赛季</h2>
+                    <select id="season-select" class="season-select"></select>
+                    <div id="season-hint" class="season-hint"></div>
                 </div>
                 <div class="startup-step">
                     <h2>选择你执教的球队</h2>
@@ -102,17 +107,19 @@
     <!-- 通知容器 -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="js/data/teams.js?v=20260904c"></script>
-    <script src="js/data/players.js?v=20260904c"></script>
-    <script src="js/data/rookies.js?v=20260904c"></script>
-    <script src="js/data/nba_stats.js?v=20260904c"></script>
-    <script src="js/engine/simulation.js?v=20260904c"></script>
-    <script src="js/engine/trade.js?v=20260904c"></script>
-    <script src="js/engine/draft.js?v=20260904c"></script>
-    <script src="js/engine/season.js?v=20260904c"></script>
-    <script src="js/engine/achievements.js?v=20260904c"></script>
-    <script src="js/engine/save.js?v=20260904c"></script>
-    <script src="js/ui/app.js?v=20260904c"></script>
-    <script src="js/main.js?v=20260904c"></script>
+    <script src="js/data/teams.js?v=20260904d"></script>
+    <script src="js/data/players.js?v=20260904d"></script>
+    <script src="js/data/rookies.js?v=20260904d"></script>
+    <script src="js/data/nba_stats.js?v=20260904d"></script>
+    <script src="js/data/history/history_seasons.js?v=20260904d"></script>
+    <script src="js/engine/simulation.js?v=20260904d"></script>
+    <script src="js/engine/trade.js?v=20260904d"></script>
+    <script src="js/engine/draft.js?v=20260904d"></script>
+    <script src="js/engine/history.js?v=20260904d"></script>
+    <script src="js/engine/season.js?v=20260904d"></script>
+    <script src="js/engine/achievements.js?v=20260904d"></script>
+    <script src="js/engine/save.js?v=20260904d"></script>
+    <script src="js/ui/app.js?v=20260904d"></script>
+    <script src="js/main.js?v=20260904d"></script>
 </body>
 </html>

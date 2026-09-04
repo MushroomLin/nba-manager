@@ -15,30 +15,43 @@ const App = (() => {
     let pendingBlockbusters = [];
 
     // ============ 初始化 ============
-    function init(managerName, teamId) {
+    // startYear: 赛季起始年（2026 = 默认现役名单 2026-27；1996-2025 = 历史真实名单）
+    function init(managerName, teamId, startYear) {
+        const START_YEAR = startYear || 2026;
+        const isHistoryMode = START_YEAR < 2026 && window.HistoryEngine && HistoryEngine.isAvailable();
         const teams = JSON.parse(JSON.stringify(window.TEAMS_DATA));
-        // 深拷贝球员并赋 id
-        // 修复：给年轻初始球员标记为新秀（模拟上赛季选秀进联盟），让第一赛季有 ROY 候选
-        // 真实 NBA 2026-27 赛季的 ROY 是 2026 年选秀进联盟的球员；
-        // PLAYERS_DATA 无 draftYear 字段，用年龄近似：age <= 20 视为新秀（约 20 人，含弗拉格/迪班萨等）
-        const START_YEAR = 2026;
-        const players = window.PLAYERS_DATA.map((p, i) => {
-            const isRookie = p.a <= 20;
-            // 修复 v5：超巨数量锐减根因——初始 pot = ovr + 0~4，导致 ovr 85-89 的球星 pot 平均 87-89，
-            //   永远无法突破 90。让 ovr>=83 的球员 pot 至少 90+，确保超巨池可持续补充
-            //   真实 NBA 中 25 岁左右的 85+ 球星（如东契奇/亚历山大/文班）仍有成长空间到 90+
-            let pot = p.o + randInt(0, 4);
-            if (p.o >= 83 && p.a <= 27) pot = Math.max(pot, 90 + randInt(0, 4)); // 巅峰期球星可冲击 90+
-            else if (p.o >= 80 && p.a <= 24) pot = Math.max(pot, 88 + randInt(0, 3)); // 年轻全明星有成长空间
-            return {
-                ...p,
-                id: `p_${i}`,
-                pot,
-                isRookie,
-                draftYear: isRookie ? START_YEAR : null,
-                yrsInLeague: isRookie ? 0 : 5, // 新秀合同期第 1 年；老球员默认 5 年（已过新秀期）
-            };
-        });
+        let players;
+        if (isHistoryMode) {
+            // 历史队名覆盖（西雅图超音速 / 温哥华灰熊 / 新泽西篮网 / 华盛顿子弹…）
+            teams.forEach(t => {
+                const lbl = HistoryEngine.teamLabel(t.id, START_YEAR);
+                if (lbl) { t.city = lbl.city; t.name = lbl.name; }
+            });
+            // 真实历史名单（历史缩写已映射到现役球队 ID）
+            players = HistoryEngine.buildLeague(START_YEAR) || [];
+        } else {
+            // 深拷贝球员并赋 id
+            // 修复：给年轻初始球员标记为新秀（模拟上赛季选秀进联盟），让第一赛季有 ROY 候选
+            // 真实 NBA 2026-27 赛季的 ROY 是 2026 年选秀进联盟的球员；
+            // PLAYERS_DATA 无 draftYear 字段，用年龄近似：age <= 20 视为新秀（约 20 人，含弗拉格/迪班萨等）
+            players = window.PLAYERS_DATA.map((p, i) => {
+                const isRookie = p.a <= 20;
+                // 修复 v5：超巨数量锐减根因——初始 pot = ovr + 0~4，导致 ovr 85-89 的球星 pot 平均 87-89，
+                //   永远无法突破 90。让 ovr>=83 的球员 pot 至少 90+，确保超巨池可持续补充
+                //   真实 NBA 中 25 岁左右的 85+ 球星（如东契奇/亚历山大/文班）仍有成长空间到 90+
+                let pot = p.o + randInt(0, 4);
+                if (p.o >= 83 && p.a <= 27) pot = Math.max(pot, 90 + randInt(0, 4)); // 巅峰期球星可冲击 90+
+                else if (p.o >= 80 && p.a <= 24) pot = Math.max(pot, 88 + randInt(0, 3)); // 年轻全明星有成长空间
+                return {
+                    ...p,
+                    id: `p_${i}`,
+                    pot,
+                    isRookie,
+                    draftYear: isRookie ? START_YEAR : null,
+                    yrsInLeague: isRookie ? 0 : 5, // 新秀合同期第 1 年；老球员默认 5 年（已过新秀期）
+                };
+            });
+        }
 
         // 按球队分组
         const teamsPlayers = {};
@@ -62,7 +75,7 @@ const App = (() => {
 
         state = {
             manager: { name: managerName, teamId },
-            year: 2026,
+            year: START_YEAR,
             phase: "regular",
             teams,
             players,
@@ -100,15 +113,34 @@ const App = (() => {
         updateStandings();
         renderAll();
         autoSave();
-        // 后台异步加载 NBA 真实球员历史数据（不阻塞 UI，加载完自动刷新当前球员详情）
-        NBAStats.ensureLoaded().then(ok => {
-            if (!ok) return;
-            // 用真实 NBA 上赛季数据预填 playerHistory，让第一赛季也能评选 MIP
-            // （否则第一赛季所有球员无历史记录，MIP 必然空缺）
-            seedInitialPlayerHistory();
-            if (currentView === 'roster') renderAll();
-        });
+        if (isHistoryMode) {
+            // 历史模式：预填真实生涯数据（MIP 评选 + 生涯轨迹展示）与真实冠军史
+            const careers = HistoryEngine.allCareerHistories(START_YEAR);
+            let seeded = 0;
+            state.players.forEach(p => {
+                if (p.histId != null && careers[p.histId]) {
+                    state.playerHistory[p.id] = careers[p.histId];
+                    seeded++;
+                }
+            });
+            state.champions = HistoryEngine.championsBefore(START_YEAR);
+            console.log(`[历史模式] ${START_YEAR}-${String(START_YEAR + 1).slice(2)} 赛季开局：` +
+                `${state.players.filter(p => p.histId != null).length} 名真实球员，` +
+                `${seeded} 人预填真实生涯数据，${state.champions.length} 季真实冠军史`);
+        } else {
+            // 后台异步加载 NBA 真实球员历史数据（不阻塞 UI，加载完自动刷新当前球员详情）
+            NBAStats.ensureLoaded().then(ok => {
+                if (!ok) return;
+                // 用真实 NBA 上赛季数据预填 playerHistory，让第一赛季也能评选 MIP
+                // （否则第一赛季所有球员无历史记录，MIP 必然空缺）
+                seedInitialPlayerHistory();
+                if (currentView === 'roster') renderAll();
+            });
+        }
         toast(`欢迎，${managerName}！你已执教 ${teamName(teamId)}`, "success");
+        if (isHistoryMode) {
+            setTimeout(() => toast(`📖 历史模式：${START_YEAR}-${START_YEAR + 1} 赛季真实名单已加载`, "gold", 5000), 600);
+        }
     }
 
     // 读档：从存档恢复游戏状态
@@ -2533,9 +2565,26 @@ const App = (() => {
     }
 
     // ============ 选秀 ============
+    // 构建选秀班级：历史年代优先用真实选秀班级（真实球员/真实顺位），
+    // 不足 60 人用生成新秀补齐；数据范围外（1997 前 / 2025 后）回退生成班级
+    function buildRookieClass(draftYear) {
+        const real = (window.HistoryEngine && HistoryEngine.isAvailable())
+            ? HistoryEngine.getDraftClass(draftYear) : null;
+        if (!real) return DraftEngine.generateRookieClass(draftYear);
+        const cls = real.drafted.slice();
+        if (cls.length < 60) {
+            const gen = DraftEngine.generateRookieClass(draftYear);
+            while (cls.length < 60 && gen.length) cls.push(gen.shift());
+        }
+        // 落选/未参选的真实新秀追加到班级尾部：60 顺位选不完，自然流入自由市场
+        cls.push(...real.undrafted.slice(0, 15));
+        console.log(`[历史选秀] ${draftYear} 年选秀：${real.drafted.length} 名真实新秀（含 ${real.undrafted.length} 名落选）`);
+        return cls;
+    }
+
     function startDraft() {
         state.year++;
-        state.rookieClass = DraftEngine.generateRookieClass(state.year);
+        state.rookieClass = buildRookieClass(state.year);
         // 计算选秀顺位：基于上赛季战绩
         // playoffExitRound 来自 advancePlayoffs 累积写入的 state.playoffs.exits：
         //   1=首轮, 2=半决赛, 3=分区决赛, 4=总决赛败者, 5=冠军
@@ -3921,6 +3970,7 @@ const App = (() => {
         loadState, showSaveManager, showTacticsModal, showAwardsHistory,
         setAwardsView, setAwardsTab, showPlayerDetail, showPlayerCompare,
         acceptAIOffer, rejectAIOffer, showTrainingModal,
+        userDraftPick, skipRemainingDraft,
         get state() { return state; },
     };
 })();
