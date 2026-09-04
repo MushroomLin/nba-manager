@@ -176,6 +176,47 @@ const SaveEngine = (() => {
         }
     }
 
+    // ---- 导出 / 导入（JSON 文件备份，防 localStorage 丢失 / 跨设备迁移）----
+    // 导出：打包自动存档 + 全部手动槽位为 JSON 字符串
+    function exportAll() {
+        const payload = {
+            app: "nba-manager-simulator",
+            exportVersion: VERSION,
+            exportedAt: Date.now(),
+            auto: JSON.parse(localStorage.getItem(AUTO_KEY) || "null"),
+            slots: {},
+        };
+        for (let i = 1; i <= SLOT_COUNT; i++) {
+            const raw = localStorage.getItem(SLOT_PREFIX + i);
+            if (raw) payload.slots[i] = JSON.parse(raw);
+        }
+        return JSON.stringify(payload);
+    }
+
+    // 导入：校验并写回 localStorage，返回导入的存档数量（0 个则抛错）
+    function importAll(jsonText) {
+        const data = JSON.parse(jsonText);
+        if (!data || typeof data !== "object" || data.app !== "nba-manager-simulator"
+            || (!data.auto && !data.slots)) {
+            throw new Error("不是有效的游戏存档备份文件");
+        }
+        let count = 0;
+        if (data.auto && data.auto.state) {
+            localStorage.setItem(AUTO_KEY, JSON.stringify(data.auto));
+            count++;
+        }
+        if (data.slots) {
+            for (let i = 1; i <= SLOT_COUNT; i++) {
+                if (data.slots[i] && data.slots[i].state) {
+                    localStorage.setItem(SLOT_PREFIX + i, JSON.stringify(data.slots[i]));
+                    count++;
+                }
+            }
+        }
+        if (count === 0) throw new Error("备份文件中没有可用的存档数据");
+        return count;
+    }
+
     function formatTime(ts) {
         if (!ts) return "-";
         const d = new Date(ts);
@@ -191,6 +232,7 @@ const SaveEngine = (() => {
     return {
         autoSave, loadAuto, getAutoMeta, deleteAuto,
         saveSlot, loadSlot, getSlotMeta, listSlots, deleteSlot, clearAll,
+        exportAll, importAll,
         formatTime, phaseLabel, buildMeta,
         SLOT_COUNT,
     };

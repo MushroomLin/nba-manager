@@ -7,6 +7,8 @@ const App = (() => {
     let statsTab = "scoring"; // 数据看板当前榜单
     // 球员搜索视图的筛选/排序状态（持久化在模块内，切换视图不丢失）
     let playerSearchFilter = { q: "", team: "", sort: "o", pos: "" };
+    // 球员对比工具的已选球员（最多 2 名）
+    let playerCompareIds = [];
     // 快速模拟标志：fast-sim 期间不弹交易窗，结束后统一汇总
     let isFastSimming = false;
     // 快速模拟期间累积的重磅交易（结束后弹窗汇总）
@@ -821,6 +823,8 @@ const App = (() => {
             ${slotsHtml}
             <div class="modal-actions">
                 <button class="btn" id="clear-all-saves" style="margin-right:auto;color:var(--nba-red-light)">🗑️ 清除所有存档</button>
+                <button class="btn" id="export-saves" title="导出全部存档为 JSON 文件备份">📤 导出备份</button>
+                <button class="btn" id="import-saves" title="从 JSON 备份文件导入存档（覆盖现有同名存档）">📥 导入备份</button>
                 <button class="btn btn-primary" onclick="App.closeModal()">关闭</button>
             </div>
         `);
@@ -866,6 +870,57 @@ const App = (() => {
                     closeModal();
                     setTimeout(() => location.reload(), 600);
                 }
+            });
+            // 导出备份：打包自动存档 + 全部手动槽位为 JSON 文件下载
+            const exportBtn = document.getElementById("export-saves");
+            if (exportBtn) exportBtn.addEventListener("click", () => {
+                try {
+                    const json = SaveEngine.exportAll();
+                    const blob = new Blob([json], { type: "application/json" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    const d = new Date();
+                    const pad = n => String(n).padStart(2, "0");
+                    a.href = url;
+                    a.download = `nba_gm_backup_${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}.json`;
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    URL.revokeObjectURL(url);
+                    toast("存档备份已导出，请妥善保存文件", "success");
+                } catch (e) {
+                    console.error("导出存档失败:", e);
+                    toast("导出失败：" + e.message, "error");
+                }
+            });
+            // 导入备份：读取 JSON 备份文件并覆盖写回 localStorage，刷新后生效
+            const importBtn = document.getElementById("import-saves");
+            if (importBtn) importBtn.addEventListener("click", () => {
+                if (!confirm("导入将覆盖当前浏览器中的同名存档。确定继续？")) return;
+                const input = document.createElement("input");
+                input.type = "file";
+                input.accept = ".json,application/json";
+                input.onchange = () => {
+                    const file = input.files && input.files[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                        try {
+                            const n = SaveEngine.importAll(reader.result);
+                            toast(`成功导入 ${n} 个存档，刷新页面后生效`, "success");
+                            closeModal();
+                            setTimeout(() => {
+                                if (confirm("导入完成，是否立即刷新页面载入存档？")) location.reload();
+                            }, 400);
+                        } catch (e) {
+                            console.error("导入存档失败:", e);
+                            toast("导入失败：" + e.message, "error");
+                        }
+                    };
+                    reader.onerror = () => toast("文件读取失败", "error");
+                    reader.readAsText(file);
+                };
+                input.click();
             });
         }, 0);
     }
@@ -1113,8 +1168,27 @@ const App = (() => {
     // ============ 自由球员 ============
     function renderFreeAgents() {
         const fa = state.freeAgents;
-        if (!fa.length) return `<h1 class="page-title">💰 自由市场</h1><div class="empty-state">当前无自由球员。休赛期开放。</div>`;
         const myPlayers = state.teamsPlayers[state.manager.teamId];
+        if (!fa.length) {
+            // 市场未开放（常规赛/季后赛期间）：给出明确说明 + 阵容概况，帮助玩家提前规划休赛期
+            const space = window.SALARY_CAP - TradeEngine.teamSalary(myPlayers);
+            const injuredCount = myPlayers.filter(p => p.injured).length;
+            return `
+            <h1 class="page-title">💰 自由市场</h1>
+            <div class="empty-state">
+                <div style="font-size:15px;margin-bottom:6px">自由市场尚未开放</div>
+                <div class="muted" style="font-size:12px">市场在休赛期（总决赛结束后）开放<br>届时各队裁员与落选新秀将进入市场，可自由签约补强</div>
+            </div>
+            <div class="card" style="margin-top:14px">
+                <div class="card-title">提前规划 <span class="muted" style="font-size:11px;text-transform:none">为休赛期做准备</span></div>
+                <div class="stat-grid">
+                    <div class="stat-box"><div class="value">${myPlayers.length}/15</div><div class="label">名单人数</div></div>
+                    <div class="stat-box"><div class="value" style="color:${space>=0?'var(--success)':'var(--nba-red-light)'}">$${space.toFixed(1)}M</div><div class="label">薪资空间</div></div>
+                    <div class="stat-box"><div class="value" style="color:${injuredCount>0?'var(--nba-red-light)':'var(--text)'}">${injuredCount}</div><div class="label">伤病人数</div></div>
+                </div>
+                <div class="muted" style="font-size:11px;padding:8px 4px 2px">提示：空间不足时可通过「交易」或「阵容-释放球员」腾出薪金；名单满 15 人时无法签新球员</div>
+            </div>`;
+        }
         const rosterFull = myPlayers.length >= 15;
         const rows = fa.slice().sort((a,b)=>b.o-a.o).map(p => {
             return `<tr data-faid="${p.id}">
@@ -1386,11 +1460,31 @@ const App = (() => {
                 <td class="num">$${t.salary.toFixed(1)}M</td>
             </tr>`;
         }).join("");
+
+        // 王朝荣誉墙：历年总冠军（最近的在前，最多展示 10 年）
+        const champs = (state.champions || []).slice().reverse();
+        const myTitles = champs.filter(c => c.team === myId).length;
+        const champCard = champs.length === 0
+            ? `<div class="card"><div class="card-title">💍 王朝荣誉墙</div><div class="muted center" style="padding:20px">暂无冠军记录（首个赛季总决赛结束后产生）</div></div>`
+            : `<div class="card"><div class="card-title">💍 王朝荣誉墙
+                <span class="muted" style="font-size:11px;text-transform:none">共 ${champs.length} 季${myTitles>0?` · 我队 ${myTitles} 冠 💍`:''}</span></div>
+                <div class="table-wrap"><table><thead><tr><th class="num">赛季</th><th>总冠军</th><th class="num">总决赛比分</th><th>FMVP</th></tr></thead><tbody>
+                ${champs.slice(0, 10).map(c => {
+                    const isMe = c.team === myId;
+                    return `<tr style="${isMe?'background:rgba(212,175,55,0.12);font-weight:700;':''}">
+                        <td class="num">${c.year}-${String(c.year+1).slice(-2)}</td>
+                        <td><a class="team-link" data-teamid="${c.team}">${teamLogo(c.team, 20)}${teamName(c.team)}${isMe?' 🏆':''}</a></td>
+                        <td class="num">${c.finalsScore || '-'}</td>
+                        <td>${c.finalsMVP ? `${c.finalsMVP.n} <span class="muted" style="font-size:11px">${c.finalsMVP.ppg.toFixed(1)}分</span>` : '-'}</td>
+                    </tr>`;
+                }).join("")}
+                </tbody></table></div></div>`;
         return `
         <h1 class="page-title">🌐 联盟总览</h1>
         <div class="card">
             <div class="table-wrap"><table><thead><tr><th>缩写</th><th>球队</th><th>联盟</th><th class="num">战绩</th><th class="num">实力</th><th class="num">薪资</th></tr></thead><tbody>${rows}</tbody></table></div>
-        </div>`;
+        </div>
+        ${champCard}`;
     }
 
     // ============ 比赛模拟推进 ============
@@ -2678,10 +2772,12 @@ const App = (() => {
 
     // ============ 事件绑定 ============
     function bindViewEvents() {
-        // 球员详情（跳过带 data-remove 的交易移除按钮，避免点击 ✕ 时同时弹出详情）
+        // 球员详情（跳过带 data-remove 的交易移除按钮，避免点击 ✕ 时同时弹出详情；
+        //           跳过对比复选框，交给 .ps-cmp 处理）
         document.querySelectorAll("[data-pid]").forEach(el => {
-            el.addEventListener("click", () => {
+            el.addEventListener("click", (e) => {
                 if (el.dataset.remove) return; // 交易移除按钮，交给 data-remove 处理
+                if (el.classList && el.classList.contains("ps-cmp")) return; // 对比复选框
                 showPlayerDetail(el.dataset.pid);
             });
         });
@@ -2743,6 +2839,34 @@ const App = (() => {
         if (psSortSel) psSortSel.addEventListener("change", e => { playerSearchFilter.sort = e.target.value; renderView("playersearch"); });
         const psPosSel = document.getElementById("ps-pos");
         if (psPosSel) psPosSel.addEventListener("change", e => { playerSearchFilter.pos = e.target.value; renderView("playersearch"); });
+        // 球员对比工具：勾选/取消复选框（阻止冒泡避免触发行点击详情），实时更新对比按钮状态
+        // 注意：球员 id 是字符串（如 "p_5"），不可转为数字（NaN 会导致去重判断失效）
+        document.querySelectorAll(".ps-cmp").forEach(el => {
+            el.addEventListener("click", e => e.stopPropagation());
+            el.addEventListener("change", e => {
+                e.stopPropagation();
+                const pid = el.dataset.pid;
+                if (el.checked) {
+                    if (playerCompareIds.length >= 2) {
+                        el.checked = false;
+                        toast("最多选择 2 名球员，请先取消其他勾选", "warning");
+                        return;
+                    }
+                    if (!playerCompareIds.includes(pid)) playerCompareIds.push(pid);
+                } else {
+                    playerCompareIds = playerCompareIds.filter(id => id !== pid);
+                }
+                const btn = document.getElementById("ps-compare-btn");
+                if (btn) {
+                    btn.textContent = `⚖️ 对比 (${playerCompareIds.length}/2)`;
+                    btn.disabled = playerCompareIds.length !== 2;
+                }
+            });
+        });
+        const psCmpBtn = document.getElementById("ps-compare-btn");
+        if (psCmpBtn) psCmpBtn.addEventListener("click", () => {
+            if (playerCompareIds.length === 2) showPlayerCompare(playerCompareIds[0], playerCompareIds[1]);
+        });
     }
 
     // ============ 球队详情弹窗（查看任意球队球员名单 + 赛季场均）============
@@ -3074,6 +3198,92 @@ const App = (() => {
     }
 
     // ============ 球员搜索视图（全联盟在役球员检索，点击查看数据页面）============
+    // ============ 球员对比工具 ============
+    // 获取球员当前赛季场均数据（聚合所有球队数据，支持赛季中被交易的情况）
+    function getPlayerSeasonStats(pid) {
+        let gp = 0, pts = 0, reb = 0, ast = 0, fgm = 0, fga = 0;
+        (state.teams || []).forEach(t => {
+            const s = ((state.statAccum || {})[t.id] || {})[pid];
+            if (s) { gp += s.gp || 0; pts += s.pts || 0; reb += s.reb || 0; ast += s.ast || 0; fgm += s.fgm || 0; fga += s.fga || 0; }
+        });
+        if (!gp) return null;
+        return { gp, ppg: pts / gp, rpg: reb / gp, apg: ast / gp, fg: fga > 0 ? fgm / fga : 0 };
+    }
+
+    // 球员对比弹窗：基本信息 + 能力镜像条 + 当前赛季数据（优势项高亮）
+    function showPlayerCompare(pidA, pidB) {
+        const a = state.players.find(x => x.id === pidA);
+        const b = state.players.find(x => x.id === pidB);
+        if (!a || !b) { toast("球员不存在", "error"); return; }
+
+        // 能力镜像条：左球员从中间向左填充，右球员从中间向右填充
+        const skills = [["内线","ins"],["投篮","sh"],["传球","pa"],["篮板","re"],["防守","de"],["运动","at"],["球商","iq"]];
+        const skillRows = skills.map(([label, key]) => {
+            const va = a[key], vb = b[key];
+            const aWin = va > vb, bWin = vb > va;
+            return `<div class="cmp-skill-row">
+                <div class="cmp-val ${aWin?'cmp-win':''}">${va}</div>
+                <div class="cmp-track cmp-left"><div class="cmp-fill cmp-a" style="width:${va}%"></div></div>
+                <div class="cmp-label">${label}</div>
+                <div class="cmp-track cmp-right"><div class="cmp-fill cmp-b" style="width:${vb}%"></div></div>
+                <div class="cmp-val ${bWin?'cmp-win':''}">${vb}</div>
+            </div>`;
+        }).join("");
+
+        // 当前赛季数据对比（优势项高亮加粗）
+        const sa = getPlayerSeasonStats(pidA);
+        const sb = getPlayerSeasonStats(pidB);
+        const statDefs = [
+            ["出场", s => s.gp, v => v.toFixed(0), false],
+            ["得分", s => s.ppg, v => v.toFixed(1), true],
+            ["篮板", s => s.rpg, v => v.toFixed(1), true],
+            ["助攻", s => s.apg, v => v.toFixed(1), true],
+            ["命中率", s => s.fg, v => (v*100).toFixed(1)+"%", true],
+        ];
+        const statRows = statDefs.map(([label, get, fmt, higherBetter]) => {
+            const va = sa ? get(sa) : null, vb = sb ? get(sb) : null;
+            const aStr = va == null ? '<span class="muted">-</span>' : fmt(va);
+            const bStr = vb == null ? '<span class="muted">-</span>' : fmt(vb);
+            const aWin = higherBetter && va != null && vb != null && va > vb;
+            const bWin = higherBetter && va != null && vb != null && vb > va;
+            return `<tr>
+                <td class="num ${aWin?'cmp-win-cell':''}">${aStr}</td>
+                <td class="cmp-stat-label">${label}</td>
+                <td class="num ${bWin?'cmp-win-cell':''}">${bStr}</td>
+            </tr>`;
+        }).join("");
+
+        // 头部：两名球员并排
+        const header = p => `<div style="flex:1;min-width:0;text-align:center">
+            <div class="player-ovr ${ovrClass(p.o)}" style="width:46px;height:46px;font-size:18px;margin:0 auto 6px">${p.o}</div>
+            <div style="font-weight:800;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.n} ${p.injured?'🚑':''}</div>
+            <div style="font-size:12px;color:var(--text-dim);margin-top:2px"><span class="pos-${p.p}">${p.p}</span> · ${p.t ? teamLogo(p.t, 16) + teamAbbr(p.t) : '自由球员'}</div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:3px">${p.a}岁 · $${p.sal.toFixed(1)}M · 潜力${p.pot||p.o}</div>
+        </div>`;
+
+        showModal(`
+            <div class="modal-title">⚖️ 球员对比</div>
+            <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:14px;padding:12px;border-radius:10px;background:rgba(255,255,255,0.03)">
+                ${header(a)}
+                <div style="align-self:center;color:var(--text-dim);font-weight:700">VS</div>
+                ${header(b)}
+            </div>
+            <div class="card-title">能力对比</div>
+            ${skillRows}
+            <div class="cmp-legend">
+                <span><i class="cmp-dot cmp-a"></i>${a.n}</span>
+                <span><i class="cmp-dot cmp-b"></i>${b.n}</span>
+            </div>
+            <div class="card-title mt-20">当前赛季数据</div>
+            <div class="table-wrap"><table class="cmp-table"><tbody>${statRows}</tbody></table></div>
+            <div class="modal-actions">
+                <button class="btn" onclick="App.showPlayerDetail('${a.id}')">查看 ${a.n} 详情</button>
+                <button class="btn" onclick="App.showPlayerDetail('${b.id}')">查看 ${b.n} 详情</button>
+                <button class="btn btn-primary" onclick="App.closeModal()">关闭</button>
+            </div>
+        `);
+    }
+
     function renderPlayerSearch() {
         const allTeams = state.teams;
         // 候选：所有在役球员（含自由球员 p.t==null）
@@ -3129,12 +3339,20 @@ const App = (() => {
             if (p.isRookie) tags.push('<span class="tag tag-rookie">新秀</span>');
             if (p.o >= 90) tags.push('<span class="tag tag-star">球星</span>');
             if (p.injured) tags.push('<span class="tag tag-injured">伤</span>');
+            // 当前赛季场均（聚合全联盟数据，支持被交易球员）
+            const s = getPlayerSeasonStats(p.id);
+            const statCells = s
+                ? `<td class="num"><b>${s.ppg.toFixed(1)}</b></td><td class="num">${s.rpg.toFixed(1)}</td><td class="num">${s.apg.toFixed(1)}</td>`
+                : `<td class="num muted">-</td><td class="num muted">-</td><td class="num muted">-</td>`;
+            const checked = playerCompareIds.includes(p.id) ? 'checked' : '';
             return `<tr data-pid="${p.id}">
+                <td style="text-align:center"><input type="checkbox" class="ps-cmp" data-pid="${p.id}" ${checked} title="选择对比"></td>
                 <td><div class="player-row"><div class="player-ovr ${ovrClass(p.o)}">${p.o}</div><div><div class="player-name">${p.n}</div><div class="player-pos">${tags.join(' ')||'&nbsp;'}</div></div></div></td>
                 <td class="pos-${p.p}">${p.p}</td>
                 <td>${teamCell}</td>
                 <td class="num">${p.a}</td>
                 <td class="num">$${p.sal.toFixed(1)}M</td>
+                ${statCells}
             </tr>`;
         }).join('');
 
@@ -3150,11 +3368,12 @@ const App = (() => {
                 <select id="ps-team" class="text-input" style="min-width:150px">${teamOptsHtml}</select>
                 <select id="ps-pos" class="text-input" style="min-width:100px">${posOptsHtml}</select>
                 <select id="ps-sort" class="text-input" style="min-width:120px">${sortOptsHtml}</select>
+                <button id="ps-compare-btn" class="btn btn-primary" style="min-width:130px" ${playerCompareIds.length===2?'':'disabled'}>⚖️ 对比 (${playerCompareIds.length}/2)</button>
             </div>
-            <div class="card-title" style="margin-top:6px">在役球员名单 <span class="muted" style="font-size:11px;text-transform:none">点击球员查看完整数据页面</span> ${resultHint}</div>
+            <div class="card-title" style="margin-top:6px">在役球员名单 <span class="muted" style="font-size:11px;text-transform:none">点击球员查看完整数据 · 勾选两名球员可对比</span> ${resultHint}</div>
             <div class="table-wrap"><table class="player-table"><thead><tr>
-                <th>球员</th><th>位</th><th>队</th><th class="num">年</th><th class="num">薪资</th>
-            </tr></thead><tbody>${rows || `<tr><td colspan="5" class="muted center">无匹配球员</td></tr>`}</tbody></table></div>
+                <th>比</th><th>球员</th><th>位</th><th>队</th><th class="num">年</th><th class="num">薪资</th><th class="num">得分</th><th class="num">篮板</th><th class="num">助攻</th>
+            </tr></thead><tbody>${rows || `<tr><td colspan="9" class="muted center">无匹配球员</td></tr>`}</tbody></table></div>
         </div>`;
     }
 
@@ -3188,7 +3407,7 @@ const App = (() => {
     return {
         init, renderView, advance, fastAdvance, closeModal, releasePlayer, showMoreMenu,
         loadState, showSaveManager, showTacticsModal, showAwardsHistory,
-        setAwardsView, setAwardsTab, showPlayerDetail,
+        setAwardsView, setAwardsTab, showPlayerDetail, showPlayerCompare,
         get state() { return state; },
     };
 })();
