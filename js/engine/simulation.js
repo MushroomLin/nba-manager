@@ -279,9 +279,18 @@ const SimEngine = (() => {
         // 修复 v15：防守同步使用星光加成，保持与 simulateGame 完全一致
         const off = offWithStarPower(rot);
         const def = defWithStarPower(rot);
-        const re = weightedAvg(rot, p => p.re);
-        const iq = weightedAvg(rot, p => p.iq);
-        return off * 0.5 + def * 0.25 + re * 0.12 + iq * 0.13;
+        // 修复 v20：权重与 simulateGame 实际灵敏度对齐。
+        //   引擎实测：每点 off ≈ 0.013×poss×defAdj ≈ 1.22 分；
+        //             每点 def ≈ 0.011×poss×offEff ≈ 1.37 分（近对称，防守略重）。
+        //   原权重 off 0.5 / def 0.25 / re 0.12 / iq 0.13 有两个问题：
+        //   1) re/iq 完全不影响比分却占 25% 权重；
+        //   2) off:def = 2:1 与引擎近对称严重不符。
+        //   → "进攻豪华 + 配角防守差"的球队评分虚高：实测 rating 79.6 列东部第一，
+        //     头对头却对 rating 78.2 的均衡队仅 39.5% 胜率（用户看到
+        //     "评分最高却进不了季后赛"）。新权重按引擎灵敏度归一化 1.22:1.37，
+        //     评分差 → 胜率的 logistic 尺度 2.5 不变（等比 off/def 提升时
+        //     新旧评分差数值相同，1 点 ≈ 2.6 分）。
+        return off * 0.47 + def * 0.53;
     }
 
     function emptyLine(p, min) {

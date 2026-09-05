@@ -170,7 +170,12 @@ const HistoryEngine = (() => {
         const undrafted = [];
         for (const pidStr in D.players) {
             const g = D.players[pidStr];
-            if (g[5] !== draftYear) continue;
+            // 落选真实新秀：无选秀记录（g[5] 为 0/null，数据源用 0 表示落选）
+            // 但首秀年恰为 draftYear（如 2003 落选的马奎斯·丹尼尔斯、2016 落选的范弗里特）
+            // 修复 v19：原逻辑只收录有选秀记录的球员，每年 4-16 个生成假新秀混进
+            // 60 顺位选秀（用户反馈"历史赛季的新秀有时候不是真实的"）
+            const isUndraftedDebut = (g[5] === 0 || g[5] == null) && g[8] === draftYear;
+            if (g[5] !== draftYear && !isUndraftedDebut) continue;
             const fromYear = g[8];
             if (fromYear == null || fromYear < D.first || fromYear > D.last) continue;
             const rows = D.seasons[String(fromYear)];

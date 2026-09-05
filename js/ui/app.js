@@ -278,8 +278,14 @@ const App = (() => {
                 fillers.sort((a, b) => a.o - b.o);
                 toRelease = fillers[0];
             } else {
-                // 无填充球员时，释放能力最低的边缘球员
-                toRelease = [...roster].sort((a, b) => a.o - b.o)[0];
+                // 修复 v19：保护本届新秀。满员球队（15 人无 filler）连续两个顺位选秀时，
+                // 原逻辑按最低 ovr 释放，会把刚在上一顺位选中的新秀（通常 ovr 最低）
+                // 立刻挤去自由市场——用户反馈"新秀选中了但队伍没名额就不进队"的根因。
+                // 释放对象只从老将/往届球员中选；极端情况全名单都是本届新秀才兜底释放新秀。
+                const isFreshRookie = p => p.isRookie && p.draftYear === state.year;
+                const veterans = roster.filter(p => !isFreshRookie(p));
+                const pool = veterans.length > 0 ? veterans : roster;
+                toRelease = [...pool].sort((a, b) => a.o - b.o)[0];
             }
             if (!toRelease) break;
             const idx = roster.findIndex(p => p.id === toRelease.id);
@@ -2627,19 +2633,25 @@ const App = (() => {
 
     // ============ 选秀 ============
     // 构建选秀班级：历史年代优先用真实选秀班级（真实球员/真实顺位），
-    // 不足 60 人用生成新秀补齐；数据范围外（1997 前 / 2025 后）回退生成班级
+    // 不足 60 人先用真实落选新秀补位，仍不足才用生成新秀；
+    // 数据范围外（1997 前 / 2025 后）回退生成班级
     function buildRookieClass(draftYear) {
         const real = (window.HistoryEngine && HistoryEngine.isAvailable())
             ? HistoryEngine.getDraftClass(draftYear) : null;
         if (!real) return DraftEngine.generateRookieClass(draftYear);
         const cls = real.drafted.slice();
+        // 修复 v19：真实落选新秀优先补位（如 2003 马奎斯·丹尼尔斯），
+        // 原逻辑直接用生成新秀填满 60 人，每年 4-16 个假新秀混进历史选秀
+        let ui = 0;
+        while (cls.length < 60 && ui < real.undrafted.length) cls.push(real.undrafted[ui++]);
         if (cls.length < 60) {
             const gen = DraftEngine.generateRookieClass(draftYear);
             while (cls.length < 60 && gen.length) cls.push(gen.shift());
         }
-        // 落选/未参选的真实新秀追加到班级尾部：60 顺位选不完，自然流入自由市场
-        cls.push(...real.undrafted.slice(0, 15));
-        console.log(`[历史选秀] ${draftYear} 年选秀：${real.drafted.length} 名真实新秀（含 ${real.undrafted.length} 名落选）`);
+        // 剩余落选/未参选的真实新秀追加到班级尾部：60 顺位选不完，自然流入自由市场
+        cls.push(...real.undrafted.slice(ui, ui + 15));
+        const genCount = cls.slice(0, 60).filter(r => r.histId == null).length;
+        console.log(`[历史选秀] ${draftYear} 年选秀：${real.drafted.length} 名真实选中 + ${real.undrafted.length} 名真实落选，60 顺位内生成新秀 ${genCount} 名`);
         return cls;
     }
 
@@ -2887,7 +2899,11 @@ const App = (() => {
                     fillers.sort((a, b) => a.o - b.o);
                     toRelease = fillers[0];
                 } else {
-                    toRelease = [...roster].sort((a, b) => a.o - b.o)[0];
+                    // 修复 v19：与 makeRoomForRookie 一致，保护本届新秀不被裁减挤掉
+                    const isFreshRookie = p => p.isRookie && p.draftYear === state.year;
+                    const veterans = roster.filter(p => !isFreshRookie(p));
+                    const pool = veterans.length > 0 ? veterans : roster;
+                    toRelease = [...pool].sort((a, b) => a.o - b.o)[0];
                 }
                 if (!toRelease) break;
                 const idx = roster.findIndex(p => p.id === toRelease.id);
