@@ -177,7 +177,7 @@ const SeasonEngine = (() => {
     // 休赛期：球员成长与老化
     // 返回 { changes, retired } —— changes 为重要成长记录，retired 为退役球员数组
     // 注意：自由球员（isFreeAgent=true）由 ageFreeAgents 单独处理，此处跳过避免双重老化
-    function offseasonProgression(players) {
+    function offseasonProgression(players, currentYear) {
         const changes = [];
         const retired = [];
         // 第一阶段：年龄增长 + 能力调整（暂不清除 isRookie，留给后续评选参考）
@@ -185,12 +185,16 @@ const SeasonEngine = (() => {
             // 自由球员由 ageFreeAgents 单独处理，此处跳过避免双重老化
             if (p.isFreeAgent) return;
             // 修复：刚入行的新秀（今年选秀/落选签约，一场未打）不参与本期老化与成长。
-            // 原逻辑在此处给新秀 +1 岁并提前向潜力成长，导致新秀赛季年龄/能力双重虚高
-            // （如 2003 勒布朗以真实数据 19 岁 o87 入行，开赛却变成 20 岁 o91+）。
-            // 新秀的真实年龄与评分已由选秀数据给出，首个成长期应是其新秀赛季结束后的休赛期。
-            // 注意：isRookie 会在本次调用的第四阶段清除，故此处 isRookie===true
-            // 仅可能是"刚入行"的新秀（老存档中已入行新秀的 isRookie 均已被清除）。
-            if (p.isRookie) {
+            // 修复 v14：原仅凭 isRookie 判断 —— 历史模式开局新秀（如 2003 勒布朗）在
+            //   打完新秀赛季后的休赛期仍被跳过，导致全联盟新秀年龄永久慢一岁
+            //   （实测轨迹 19→19→20→21，正确应为 19→20→21→22）。
+            //   现加 draftYear 判断：仅"今年刚被选中、一场未打"（draftYear >= currentYear）跳过；
+            //   draftYear < currentYear 说明新秀赛季已打完，正常参与老化成长。
+            // 注意：isRookie 会在本次调用的第四阶段清除，故正常路径的 isRookie===true
+            // 属于历史模式开局新秀（老存档已入行新秀的 isRookie 均已被清除）。
+            const isFreshRookie = p.isRookie
+                && (currentYear == null || p.draftYear == null || p.draftYear >= currentYear);
+            if (isFreshRookie) {
                 // yrsInLeague 语义保持不变：新秀赛季 = 第 1 年（新秀合同/淘汰机制依赖此约定）
                 if (p.yrsInLeague == null) p.yrsInLeague = 0;
                 p.yrsInLeague += 1;
@@ -207,8 +211,21 @@ const SeasonEngine = (() => {
                 // 年轻球员成长（朝潜力靠近）
                 // 修复 v4：原 0.50/0.62 让新秀 3 年涨 6-9 点，超过真实 NBA 的 3-5 点
                 // 降至 0.32/0.42：3 年涨 4-6 点，配合降低后的新秀初始强度，成才率回归合理
+                // 修复 v18（青年军虚高）：历史球员（pot=真实生涯峰值）分档成长——
+                //   精英潜力(pot≥88)保持 0.32/0.42 快速到峰（真实超巨普遍 23-25 岁
+                //   巅峰：LBJ/霍华德/保罗/韦德，也是玩家培养球星的核心乐趣）；
+                //   中低潜力(pot<88)放缓至 0.22/0.28（真实角色球员 25-27 岁才到峰：
+                //   帕金斯 25 岁到峰 77，比卢普斯 29 岁）。原统一速率让全联盟青年
+                //   21-22 岁即达生涯峰——3 季后 BOS/TOR/ATL 等青年军 rating 虚高
+                //   3-5 点（55-65 胜 vs 真实 26-42 胜），全联盟评级压缩到 75-82，
+                //   三星球队与普通队无差距（用户投诉：3 个 90+ 进不了季后赛）。
+                //   实测对照：真实 2005-06 ≤23 岁球员均值仅 71.3，原模拟同批人
+                //   已达 77+（全员提前 4-5 年到峰）。
                 const target = p.pot || p.o + 3;
-                const growthRate = (p.pot && p.pot - p.o >= 10) ? 0.42 : 0.32;
+                const histMid = p.histId != null && !(p.pot >= 88);
+                let growthRate;
+                if (histMid) growthRate = (target - p.o >= 10) ? 0.28 : 0.22;
+                else growthRate = (p.pot && p.pot - p.o >= 10) ? 0.42 : 0.32;
                 const grow = Math.round((target - p.o) * growthRate + randInt(-1, 1));
                 delta = Math.max(0, grow); // 至少不退步（年轻球员保护）
             } else if (p.a <= 27) {
@@ -222,10 +239,21 @@ const SeasonEngine = (() => {
                 // 24-27 岁球员 pot 下限提升至 ovr + 4（若原本更低）
                 // 90+膨胀修复：ovr≥88 的边缘球星不再动态抬升 pot——真实历史 2004 年
                 // 90+ 仅 33 人，动态下限会把大批 86-89 球员推进 90+（实测 44-50）
-                if (target < p.o + 4 && p.o < 88) target = p.o + 4;
+                // 修复 v17（联盟通胀/战绩收敛）：动态抬升仅适用于"生成型球员"
+                //   （现代模式 pot=ovr+0~4 的填充值，需要动态成长空间）。
+                //   历史模式球员（histId）的 pot 是真实生涯峰值，是硬上限——
+                //   动态抬升会让全联盟 24-27 岁中坚棘轮式爬到 88：实测 2003 开局
+                //   3 季内轮换均值 78.6→79.7、75+ 人数 193→224（+16%），
+                //   全联盟 rating 压缩到 75-82，三星球队与普通球队毫无差距，
+                //   进季后赛变成抽签（用户投诉：3 个 90+ 进不了季后赛的根因）。
+                //   filler 填充球员同理排除（pot=ovr+0~2，定位是凑阵容而非培养对象）。
+                const isGenerated = p.histId == null && !p.isFiller;
+                if (isGenerated && target < p.o + 4 && p.o < 88) target = p.o + 4;
                 const gap = Math.max(0, target - p.o);
                 if (gap >= 3) {
-                    const growthRate = gap >= 5 ? 0.40 : 0.30; // 高潜力球员加速成长
+                    // 修复 v18：历史中低潜力(pot<88)放缓至 0.20（同上青年军虚高问题）
+                    const histMid2 = p.histId != null && !(p.pot >= 88);
+                    const growthRate = histMid2 ? 0.20 : (gap >= 5 ? 0.40 : 0.30); // 高潜力球员加速成长
                     delta = Math.max(0, Math.round(gap * growthRate + randInt(-1, 1))); // 仍向 pot 成长
                 } else {
                     delta = randInt(-1, 1); // 接近 pot，基本持平
@@ -249,10 +277,14 @@ const SeasonEngine = (() => {
             // 真实 NBA 单季最大进步约 +8-9（如恩比德新秀年），上限设 9 平衡超巨培养与防跳变
             if (delta > 9) delta = 9;
             p.o = Math.max(40, Math.min(99, p.o + delta));
-            // 各项能力同步微调
+            // 各项能力同步调整
+            // 修复 v16：原系数 0.7 导致 o 与子属性逐年脱钩（o +9 时子属性仅 +6.3），
+            //   用户培养出的"90+"球星引擎实际战力只有 82-85（offOf 视角），
+            //   三球星阵容 rating 虚高不涨实战，进不了季后赛（实测布泽尔 o=93 off=82）。
+            //   现同步 1.0×delta：显示总评与引擎属性保持一致，培养的球星货真价实。
             const skills = ["ins","sh","pa","re","de","at","iq"];
             skills.forEach(s => {
-                p[s] = Math.max(20, Math.min(99, p[s] + Math.round(delta * 0.7 + randInt(-1, 1))));
+                p[s] = Math.max(20, Math.min(99, p[s] + Math.round(delta + randInt(-1, 1))));
             });
             // 运动能力随年龄下降更快
             if (p.a > 30) p.at = Math.max(20, p.at - randInt(0, 2));

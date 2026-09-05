@@ -232,7 +232,11 @@ const App = (() => {
         const positions = ["PG","SG","SF","PF","C"];
         const pos = positions[idx % 5];
         const profile = window.ROOKIE_POS_PROFILES[pos];
-        const ovr = randInt(62, 70);
+        // 修复 v16：原 ovr 62-70 低于"轮换边缘"水平 —— 历史联盟轮换球员 25 分位即 74，
+        //   阵容被硬帽/裁员掏空后补进来的替补全场拖累攻防，实测"3×90+球星 + 全填充替补"
+        //   rating 仅 73-78（联盟 75-82），强分区直接无缘季后赛（用户核心投诉）。
+        //   提升 68-76 对应真实 NBA 第 10-12 人，球星短轮换不再被替补拖垮。
+        const ovr = randInt(68, 76);
         const v = () => randInt(-4, 4);
         // 替补球员用「名+姓」组合生成，避免与现役/新秀重名
         const proto = window.ROOKIE_PROTOTYPES;
@@ -248,13 +252,13 @@ const App = (() => {
             o: ovr,
             pot: ovr + randInt(0, 2),
             sal: TradeEngine.salaryForOvr(ovr) * (0.6 + Math.random()*0.5),
-            ins: clamp(profile.ins + v(), 40, 72),
-            sh: clamp(profile.sh + v(), 40, 74),
-            pa: clamp(profile.pa + v(), 35, 72),
-            re: clamp(profile.re + v(), 35, 75),
-            de: clamp(profile.de + v(), 40, 74),
-            at: clamp(profile.at + v(), 50, 80),
-            iq: clamp(profile.iq + v(), 50, 76),
+            ins: clamp(profile.ins + v(), 48, 78),
+            sh: clamp(profile.sh + v(), 50, 80),
+            pa: clamp(profile.pa + v(), 45, 78),
+            re: clamp(profile.re + v(), 48, 80),
+            de: clamp(profile.de + v(), 50, 78),
+            at: clamp(profile.at + v(), 52, 82),
+            iq: clamp(profile.iq + v(), 54, 80),
             isRookie: false,
             isFiller: true,
         };
@@ -2423,7 +2427,12 @@ const App = (() => {
             const champ = po.finalsResult.winner;
             const loser = po.finalsPair.high.teamId === champ.teamId ? po.finalsPair.low : po.finalsPair.high;
             // 修复 v11：总决赛每场也记录到 userGameLog
-            pushPlayoffGamesToLog(po.finalsResult, myId, "总决赛");
+            // 修复 v15：原无条件写入 —— 玩家未进总决赛时，总决赛 4-7 场被
+            //   误记为玩家的比赛（"最近比赛"出现从未打过的对手且战绩虚增），
+            //   现仅当玩家球队真实参加总决赛时才记录
+            if (po.finalsPair.high.teamId === myId || po.finalsPair.low.teamId === myId) {
+                pushPlayoffGamesToLog(po.finalsResult, myId, "总决赛");
+            }
             po.exits[loser.teamId] = 4; // 总决赛败者
             po.exits[champ.teamId] = 5; // 冠军
             // 评选总决赛 MVP（FMVP）：基于总决赛每场双方球员数据，冠军球队中综合评分最高者当选
@@ -2846,7 +2855,8 @@ const App = (() => {
             }
         }
         // 2. 球员成长与老化（含退役评估）
-        const progression = SeasonEngine.offseasonProgression(state.players);
+        // 修复 v14：传 state.year 用于区分"刚选秀一场未打"与"已打完新秀赛季"的新秀
+        const progression = SeasonEngine.offseasonProgression(state.players, state.year);
         const changes = progression.changes;
         const retired = progression.retired;
         // 3. 清理退役球员：从各球队名单移除，并从 players 数组中删除

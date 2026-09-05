@@ -274,14 +274,14 @@ const SimEngine = (() => {
     function teamRating(players) {
         const rot = buildRotation(players);
         if (rot.length === 0) return 60;
-        let total = 0, wsum = 0;
-        rot.forEach(r => {
-            const p = r.player;
-            const off = (p.ins + p.sh + p.pa) / 3;
-            const rate = off * 0.5 + p.de * 0.25 + p.re * 0.12 + p.iq * 0.13;
-            total += rate * r.min; wsum += r.min;
-        });
-        return wsum > 0 ? total / wsum : 60;
+        // 修复 v14：进攻使用星光加成（与 simulateGame 实际计算一致），
+        //   否则 rating 显示/蒙特卡洛预测与真实战斗力脱节
+        // 修复 v15：防守同步使用星光加成，保持与 simulateGame 完全一致
+        const off = offWithStarPower(rot);
+        const def = defWithStarPower(rot);
+        const re = weightedAvg(rot, p => p.re);
+        const iq = weightedAvg(rot, p => p.iq);
+        return off * 0.5 + def * 0.25 + re * 0.12 + iq * 0.13;
     }
 
     function emptyLine(p, min) {
@@ -296,6 +296,48 @@ const SimEngine = (() => {
         let s = 0, w = 0;
         rotation.forEach(r => { s += fn(r.player) * r.min; w += r.min; });
         return w > 0 ? s / w : 70;
+    }
+
+    // 进攻星光加成：真实 NBA 进攻球权向最强球员集中
+    // 修复 v14：原进攻效率为纯分钟加权平均 —— 超巨只按时间占比（38/240≈16%）
+    //   影响进攻，而真实球星使用率 30%+（关键时刻完全由球星接管），
+    //   导致"3 个 90+ + 7 个 75 配角"的球队与"全队 76 均衡队"五五开，
+    //   用户辛苦培养的多球星阵容进不了季后赛（实测 96+94+84 三星阵容
+    //   rating 76.5，东部仅列第 5，胜率 53% 边缘）。
+    //   修复：进攻效率 = 全队分钟加权均值 + (前三进攻点加权均值 - 全队均值) × 0.40
+    //   球星密集队获得显著加成，均衡队加成≈0（top3≈avg）。
+    //   系数 0.40 校准依据：2018 骑士（詹姆斯 offOf~95 + 角色~72）真实 ORTG
+    //   联盟第 5（+1.7 vs 平均），0.25 只给出 +0（进攻仍是联盟平均）。
+    //   防守星光加成见下方 defWithStarPower（v15）。
+    const offOf = p => (p.ins + p.sh + p.pa) / 3;
+    const STAR_POWER_COEF = 0.40;
+    function offWithStarPower(rotation) {
+        const avg = weightedAvg(rotation, offOf);
+        const sorted = rotation.slice().sort((a, b) => offOf(b.player) - offOf(a.player));
+        const top3 = sorted.slice(0, 3);
+        if (top3.length === 0 || rotation.length <= 3) return avg;
+        const topAvg = weightedAvg(top3, offOf);
+        return avg + (topAvg - avg) * STAR_POWER_COEF;
+    }
+
+    // 防守星光加成（修复 v15）：真实 NBA 防守由最强防守者"锚定"
+    //   —— 护框中锋/外线大锁的体系价值远超分钟占比，弱防守者被协防体系隐藏。
+    //   对照真实数据：2016 骑士（詹姆斯+欧文+勒夫，角色防守参差）实际防守
+    //   效率联盟第 10，而非个人 de 的算术平均（本引擎原算法给到联盟倒数）。
+    //   原纯分钟加权防守导致：三巨头（de 91/95/88）+ 弱角色（de 44-56）的
+    //   球队防守全联盟倒数第 4（实测 def=73），33 胜进不了季后赛。
+    //   修复：防守效率 = 全队分钟加权均值 + (前三防守点加权均值 - 全队均值) × 0.30
+    //   系数 0.30 < 进攻 0.40：进攻球权可完全向球星集中（真实使用率 30%+），
+    //   防守体系只能部分隐藏弱者（2018 骑士角色防守差，DRTG 仍联盟第 29）。
+    //   均衡队 top3≈avg 加成≈0，联盟整体格局不受影响。
+    const DEF_STAR_COEF = 0.30;
+    function defWithStarPower(rotation) {
+        const avg = weightedAvg(rotation, p => p.de);
+        const sorted = rotation.slice().sort((a, b) => b.player.de - a.player.de);
+        const top3 = sorted.slice(0, 3);
+        if (top3.length === 0 || rotation.length <= 3) return avg;
+        const topAvg = weightedAvg(top3, p => p.de);
+        return avg + (topAvg - avg) * DEF_STAR_COEF;
     }
 
     // ================================================================
@@ -325,10 +367,14 @@ const SimEngine = (() => {
         }
 
         // 球队攻防效率（按出场时间加权）
-        const homeOff = weightedAvg(homeRot, p => (p.ins + p.sh + p.pa) / 3);
-        const awayOff = weightedAvg(awayRot, p => (p.ins + p.sh + p.pa) / 3);
-        const homeDef = weightedAvg(homeRot, p => p.de);
-        const awayDef = weightedAvg(awayRot, p => p.de);
+        // 修复 v14：进攻改用星光加成（offWithStarPower）—— 球权向最强球员集中，
+        //   多球星阵容不再被配角线性稀释
+        // 修复 v15：防守同步改用星光加成（defWithStarPower）—— 最强防守者锚定体系，
+        //   "三巨头 + 弱防守角色"不再被算术平均拖成联盟倒数防守
+        const homeOff = offWithStarPower(homeRot);
+        const awayOff = offWithStarPower(awayRot);
+        const homeDef = defWithStarPower(homeRot);
+        const awayDef = defWithStarPower(awayRot);
 
         // 回合数 ~100，主队 +2 回合（randInt 范围差：主 98-104，客 96-102，均值差 2）
         // 修复 v2：原 randInt(98,104)+1 vs randInt(96,102) 实际 +3 回合 → 主胜率 0.595 偏高
