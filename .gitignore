@@ -3,3 +3,5 @@ node_modules/
 .DS_Store
 .trae-html-share-packages/
 __pycache__/
+*.bundle
+test_*_results.json
