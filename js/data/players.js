@@ -175,7 +175,7 @@ const PLAYERS_DATA = [
 
 // 华盛顿奇才 WAS
 {n:"特雷·杨",t:"WAS",p:"PG",a:28,o:88,sal:43.0,ins:68,sh:91,pa:93,re:33,de:34,at:78,iq:89},
-{n:"AJ·迪班萨",t:"WAS",p:"SF",a:17,o:79,sal:12.0,ins:74,sh:78,pa:66,re:60,de:74,at:84,iq:74},
+{n:"AJ·迪班萨",t:"WAS",p:"SF",a:19,o:79,sal:12.0,ins:74,sh:78,pa:66,re:60,de:74,at:84,iq:74},
 {n:"德安德烈·艾顿",t:"WAS",p:"C",a:27,o:84,sal:35.5,ins:86,sh:62,pa:54,re:82,de:74,at:74,iq:72},
 {n:"克里斯·米德尔顿",t:"WAS",p:"SF",a:34,o:82,sal:17.6,ins:76,sh:82,pa:76,re:60,de:70,at:66,iq:86},
 {n:"比拉尔·库利巴利",t:"WAS",p:"SF",a:22,o:80,sal:6.4,ins:74,sh:70,pa:66,re:58,de:84,at:84,iq:76},

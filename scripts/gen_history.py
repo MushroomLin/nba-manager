@@ -129,6 +129,8 @@ def load_seasons():
             continue
         pid = int(r["PLAYER_ID"])
         gp = num(r["GP"])
+        # 数据源偶发 gp>82（如被交易球员重复计数）；单赛季硬上限 82
+        if gp > 82: gp = 82
         rec = {
             "id": pid,
             "name": clean_name(r["PLAYER_NAME"]),
@@ -151,12 +153,14 @@ def load_seasons():
         pq = pd.read_parquet(f)
         for _, r in pq.iterrows():
             pid = int(r["player_id"])
+            gp2 = num(r.get("gp"))
+            if gp2 > 82: gp2 = 82  # 单赛季硬上限（同上）
             rec = {
                 "id": pid,
                 "name": clean_name(r.get("player_name", "")),
                 "team": str(r.get("team_abbreviation", "")).strip(),
                 "age": num(r.get("age")),
-                "gp": num(r.get("gp")),
+                "gp": gp2,
                 "min": num(r.get("min_pergame")),
                 "pts": num(r.get("pts_pergame")), "reb": num(r.get("reb_pergame")),
                 "oreb": num(r.get("oreb_pergame")), "dreb": num(r.get("dreb_pergame")),

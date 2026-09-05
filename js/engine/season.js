@@ -213,7 +213,9 @@ const SeasonEngine = (() => {
                 //   难以从 87 涨到 90+，导致超巨数量不足。对高潜力(gap>=5)提升至 0.40
                 let target = p.pot || p.o;
                 // 24-27 岁球员 pot 下限提升至 ovr + 4（若原本更低）
-                if (target < p.o + 4) target = p.o + 4;
+                // 90+膨胀修复：ovr≥88 的边缘球星不再动态抬升 pot——真实历史 2004 年
+                // 90+ 仅 33 人，动态下限会把大批 86-89 球员推进 90+（实测 44-50）
+                if (target < p.o + 4 && p.o < 88) target = p.o + 4;
                 const gap = Math.max(0, target - p.o);
                 if (gap >= 3) {
                     const growthRate = gap >= 5 ? 0.40 : 0.30; // 高潜力球员加速成长
