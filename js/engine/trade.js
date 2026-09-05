@@ -419,6 +419,8 @@ const TradeEngine = (() => {
 
     // 运行一轮 AI 交易尝试：随机选 N 对球队尝试构造并评估交易
     // 返回成功执行的交易数组 [{ teamA, teamB, outgoingA, outgoingB, blockbuster }]
+    // 修复：AI 交易绝不允许涉及玩家球队 —— 玩家阵容只能由玩家自己通过交易界面操作
+    // （原实现会随机选中玩家球队，把玩家的第4球星/老将核心悄悄换走，导致"我的球星消失了"）
     function runAiTrades(state, attempts) {
         const teams = state.teams;
         const teamsPlayers = state.teamsPlayers;
@@ -427,10 +429,17 @@ const TradeEngine = (() => {
         const executed = [];
         const tradedTeamIds = new Set(); // 单轮内同一球队最多参与 1 笔交易，避免连锁
 
+        // 玩家球队排除在 AI 自动交易之外
+        const userTeamId = state.manager && state.manager.teamId;
+        if (userTeamId) tradedTeamIds.add(userTeamId);
+
         // 修复：交易频率偏低（实测 7.2 笔/季，基线 10-20）
         // 原 0.60 概率门控叠加阈值 2，命中率仅 ~7%
-        // 提至 0.75：每日约 75% 概率尝试，配合阈值 1，预期交易频率 ~12-16 笔/季
-        if (Math.random() > 0.75) return executed;
+        // 修复 v13：赛程从 ~87 天拉长到 ~155 天后，按天触发的交易翻倍到 25-30 笔/季
+        // 改为按赛程长度自适应：每季约 65 个"交易日"尝试（155 天 × 0.42 ≈ 65），
+        // 配合阈值 1 的命中率，交易频率回归 ~12-16 笔/季
+        const tradeDays = state.schedule ? Math.min(65 / state.schedule.length, 0.75) : 0.45;
+        if (Math.random() > tradeDays) return executed;
 
         for (let i = 0; i < attempts; i++) {
             const teamA = teams[randInt(0, teams.length - 1)].id;

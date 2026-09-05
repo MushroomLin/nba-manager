@@ -209,7 +209,10 @@ const SimEngine = (() => {
             else if (o >= 84) base = 34 + rand(-1, 1.5);     // 全明星 33-35.5
             else if (o >= 80) base = 31 + rand(-1, 1.5);     // 首发核心 30-32.5
             else if (o >= 76) base = 27 + rand(-1, 1.5);     // 首发配角 26-28.5
-            else if (i < 5)   base = 22 + rand(-1, 2);       // 弱首发 21-24
+            // 修复 v12：弱首发需要 o>=68 —— 原 i<5 无条件给 21-24 分钟，
+            // 导致"4球星+全55替补"的极端阵容里 55 分替补拿 26 分钟（拖垮强队）。
+            // 现在低能力球员按能力分档（6-12 分钟），球星通过归一化获得更多时间。
+            else if (i < 5 && o >= 68) base = 22 + rand(-1, 2); // 弱首发 21-24
             else if (o >= 72) base = 16 + rand(-1, 2);       // 主替补 15-18
             else if (o >= 68) base = 10 + rand(-1, 2);       // 轮换替补 9-12
             else              base = 7 + rand(-1, 2);        // 末端替补 6-9（原 4-7 偏低）
@@ -233,8 +236,10 @@ const SimEngine = (() => {
         // 归一化到 240 分钟（5×48）
         const total = sum(minPlan);
         const scale = 240 / total;
-        // 5人及以下轮换单球员上限提到 48（NBA 单场最大48分钟），否则 44
-        const minCap = rotation.length <= 5 ? 48 : 44;
+        // 单场分钟上限：轮换越短上限越高（阵容单薄时球星必须多打，真实 NBA 明星短轮换 46+ 分钟）
+        // 修复 v12：原仅 ≤5 人给 48、其余一律 44 —— 球星受伤时剩余球星仍被压在 44，
+        // 55 分替补被迫打 30+ 分钟，造成不必要的连败死亡螺旋
+        const minCap = rotation.length <= 5 ? 48 : rotation.length <= 7 ? 46 : 44;
         const result = rotation.map((p, i) => ({
             player: p,
             // 修复：归一化后下限 4→6，与 base 下限一致
@@ -329,9 +334,15 @@ const SimEngine = (() => {
         // 修复 v2：原 randInt(98,104)+1 vs randInt(96,102) 实际 +3 回合 → 主胜率 0.595 偏高
         //         v1 改为 randInt(97,103)+1 vs randInt(97,103) 仅 +1 回合 → 主胜率 0.52 偏低
         // 真实 NBA 主场优势约 +2.5 分，对应 ~57% 主胜率；+2 回合 × 1.13 ≈ +2.3 分，匹配真实
+        // 修复 v12：节奏战术改为双方共享 —— 真实比赛双方回合数几乎相同（±2），
+        //   一队打慢整场比赛都会慢。原实现只减自己回合数（慢节奏=每场自杀 -5.7 分），
+        //   导致 4 星球队选慢节奏直接跌出季后赛（实测 26-56）。
+        //   现取双方节奏意愿的均值作为本场节奏：慢节奏队把比赛拖入阵地战（双方回合都少），
+        //   快节奏队提升全场攻防转换（双方回合都多）—— 成为真实战略选择而非自残。
         const paceAdj = (tac) => tac ? (tac.pace === 2 ? 5 : tac.pace === 0 ? -5 : 0) : 0;
-        const homePoss = randInt(98, 104) - (isPlayoff ? 3 : 0) + paceAdj(homeTactics);
-        const awayPoss = randInt(96, 102) - (isPlayoff ? 3 : 0) + paceAdj(awayTactics);
+        const gamePace = (paceAdj(homeTactics) + paceAdj(awayTactics)) / 2;
+        const homePoss = randInt(98, 104) - (isPlayoff ? 3 : 0) + gamePace;
+        const awayPoss = randInt(96, 102) - (isPlayoff ? 3 : 0) + gamePace;
 
         // 每回合期望得分（进攻效率）
         // 修复 v11：原基线 1.15 实测场均 111.8（真实 NBA 2024-25 约 114），偏低 2.2 分

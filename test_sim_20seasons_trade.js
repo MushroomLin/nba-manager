@@ -213,7 +213,7 @@ for (let season = 0; season < SEASONS; season++) {
                 if (idx >= 0) roster.splice(idx, 1);
                 state.players = state.players.filter(p => p.id !== toRelease.id);
             }
-            DraftEngine.assignRookieToTeam(pick, t.id, roster.length + 1);
+            DraftEngine.assignRookieToTeam(pick, t.id, roster.length + 1, roster);
             state.teamsPlayers[t.id].push(pick);
             state.players.push(pick);
             rookieAssignments.push({ n: pick.n, o: pick.o, pot: pick.pot, team: t.id });
@@ -342,6 +342,10 @@ seasonsData.forEach(s => {
     const under50 = vals.filter(v => v < 50).length;
     const overCap = vals.filter(v => v > SALARY_CAP).length;
     console.log(`S${String(s.season).padStart(2)} | ${s.year} | ${s.avgSalary.toFixed(1)}M | ${s.minTeamSalary.toFixed(1)}M | ${s.maxTeamSalary.toFixed(1)}M | ${over200} | ${under50} | ${overCap}/30`);
+    // 超 200M 球队阵容明细转储（诊断用）
+    Object.entries(s.teamSalaries).forEach(([tid, sal]) => {
+        if (sal > 200) console.log(`  [>200M] S${s.season} ${tid} $${sal}M 名单=${s.teamSizes[tid]}人 filler=${s.teamFillerCounts[tid]}`);
+    });
 });
 
 // 5. 名单人数 & filler

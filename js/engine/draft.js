@@ -303,9 +303,18 @@ const DraftEngine = (() => {
     }
 
     // 将新秀加入球队
-    function assignRookieToTeam(rookie, teamId, pickNumber) {
+    function assignRookieToTeam(rookie, teamId, pickNumber, teamPlayers) {
         rookie.t = teamId;
         rookie.sal = rookieSalary(rookie.o, pickNumber <= 30 ? 1 : 2);
+        // 修复 v13：超帽球队签新秀按底薪——真实 NBA 超帽球队只能用底薪/次轮特例补员
+        // 原实现给硬帽裁剪后名单只剩 5-8 人的球队连续分配 7.5-11M 新秀合同，
+        // 导致球队总薪资突破 200M+（硬帽 182.8M 名存实亡）
+        if (teamPlayers && window.SALARY_CAP) {
+            const payroll = teamPlayers.reduce((s, p) => s + (p.sal || 0), 0);
+            if (payroll + rookie.sal > window.SALARY_CAP * 1.30) {
+                rookie.sal = 1.2; // 落选/次轮底薪特例
+            }
+        }
         rookie.draftPick = pickNumber;
         // 选秀信息（与真实 NBA 球员数据结构对齐，供球员详情展示）
         // draftYear 已在生成时设置；此处补充 round/number

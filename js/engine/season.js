@@ -59,6 +59,12 @@ const SeasonEngine = (() => {
         });
 
         // 分配到比赛日：每天每队最多 1 场
+        // 修复 v13：原贪心每天塞满 15 场 → 82 场压缩在 ~87 天（0.94 场/天/队），
+        //   伤病缺阵天数 ≈ 缺阵场次，球星伤停的实际损失被放大一倍
+        //   （真实 NBA 82 场打约 175 天 ≈ 0.47 场/天，10 天伤停只缺 ~5 场）。
+        //   限制每天最多 8 场：赛程铺满 ~160-175 天，伤病换算回归真实比例，
+        //   显著缓解"4 星豪阵因伤病潮跌出季后赛"的悬崖效应。
+        const GAMES_PER_DAY = 8;
         const days = [];
         const remaining = [...rawGames];
         shuffle(remaining);
@@ -67,6 +73,7 @@ const SeasonEngine = (() => {
             const day = [];
             const playedToday = new Set();
             for (let i = remaining.length - 1; i >= 0; i--) {
+                if (day.length >= GAMES_PER_DAY) break;
                 const g = remaining[i];
                 if (!playedToday.has(g.home) && !playedToday.has(g.away)) {
                     day.push(g);

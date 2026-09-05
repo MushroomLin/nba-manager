@@ -417,6 +417,37 @@ const App = (() => {
                 replaced++;
             }
         });
+        // 3. 薪资空间消费：大空间球队主动签优质自由球员升级阵容
+        //    修复 v13：原逻辑只补名单/换弱者，重建队坐拥 60-90M 空间不消费，
+        //    20 季模拟中 8 个赛季出现球队总薪资 <50M（真实 NBA 重建队也会吸收即战力）
+        //    规则：薪资空间 >25M 的球队，若自由市场有明显强于自家轮换末端的球员(ovr 高 3+)则签约，每队最多 2 人
+        state.teams.forEach(t => {
+            if (t.id === myId) return; // 玩家球队由玩家决策
+            const roster = state.teamsPlayers[t.id];
+            const currentSal = roster.reduce((s, p) => s + (p.sal || 0), 0);
+            let capRoom = (cap != null ? cap - currentSal : 0);
+            if (capRoom < 25) return;
+            let upgrades = 0;
+            // 自家轮换末端（第 9 人）的能力
+            const sortedRoster = roster.slice().sort((a, b) => b.o - a.o);
+            while (upgrades < 2 && capRoom >= 25 && roster.length < 15) {
+                const ninth = sortedRoster.slice(0, 9).pop() || sortedRoster[sortedRoster.length - 1];
+                const bench = sortedRoster[9];
+                const threshold = Math.max(ninth ? ninth.o : 60, bench ? bench.o : 60) + 3;
+                // 自由市场中能力达标的最强球员
+                let target = null;
+                for (const fa of availableFas) {
+                    if (fa.t !== null || fa.isRetired) continue;
+                    if (fa.o >= threshold) { target = fa; break; }
+                }
+                if (!target) break;
+                if (!trySign(t.id, roster, target)) break;
+                capRoom -= (target.sal || 0);
+                sortedRoster.push(target);
+                sortedRoster.sort((a, b) => b.o - a.o);
+                upgrades++;
+            }
+        });
         return { signed };
     }
 
@@ -1813,9 +1844,11 @@ const App = (() => {
 
     // ============ AI 主动交易报价 ============
     // 每场用户比赛后概率触发：AI 球队按自身需求构造报价（对我方球员感兴趣），
-    // 存入收件箱，仪表盘展示，10 天后过期
+    // 存入收件箱，仪表盘展示，过期作废
     const AI_OFFER_CHANCE = 0.07;   // 每场 ~7%，一赛季约 5-6 份报价
-    const AI_OFFER_TTL = 10;        // 报价有效期（天）
+    // 修复 v13：赛程从 ~87 天拉长到 ~155 天后（每天 0.5 场），10 天只剩 ~5 场审阅时间
+    // 调至 20 天 ≈ 10 场比赛，保持原有的报价审阅体验
+    const AI_OFFER_TTL = 20;        // 报价有效期（天）
     const AI_OFFER_MAX_PENDING = 3; // 收件箱上限
 
     function maybeGenerateAIOffer() {
@@ -2011,7 +2044,13 @@ const App = (() => {
 
         const confOf = {}; state.teams.forEach(t => confOf[t.id] = t.conf);
         const logistic = x => 1 / (1 + Math.exp(-x));
-        const HOME_EDGE = 1.6; // 主场优势折算评分加成
+        // 修复 v12：蒙特卡洛校准 —— 原 diff/7.0 严重低估引擎灵敏度
+        //   实测（420 场/队）：BOS 评分 75.7 实际胜率 96%（原公式仅预测 69%），
+        //   BKN 68.7 实际 13%（原公式预测 45%）——强队被大幅低估、弱队被高估。
+        //   拟合真实引擎：单场胜率 ≈ logistic(评分差 / 2.5)。
+        //   主场优势：引擎 +2 回合 ≈ +2.3 分 ≈ 1.0 评分点（实测主胜率 59.8%）。
+        const HOME_EDGE = 1.0; // 主场优势折算评分加成
+        const RATING_SCALE = 2.5; // 评分差 → 胜率的 logistic 尺度
 
         let titleCount = 0, playoffsCount = 0, winSum = 0;
         const titleTally = {}; // 各队夺冠次数
@@ -2023,7 +2062,7 @@ const App = (() => {
             remaining.forEach(day => {
                 day.forEach(g => {
                     const diff = (ratings[g.home] + HOME_EDGE) - ratings[g.away];
-                    const pHome = logistic(diff / 7.0); // 评分差 7 分约 67% 胜率
+                    const pHome = logistic(diff / RATING_SCALE); // 评分差 2.5 分约 73% 胜率（与引擎实测一致）
                     if (Math.random() < pHome) { w[g.home]++; l[g.away]++; }
                     else { w[g.away]++; l[g.home]++; }
                 });
@@ -2061,8 +2100,9 @@ const App = (() => {
     // 模拟一个季后赛 bracket（东西部各 8 队种子）
     function simulateBracket(east, west, ratings, logistic) {
         const seriesWin = (a, b) => {
-            // bo7：每场胜率 logistic((ratingA - ratingB + 0.5) / 7)，0.5 微弱主场补偿取平均
-            const pA = logistic((ratings[a.id] - ratings[b.id] + 0.3) / 7.0);
+            // bo7：每场胜率 logistic((ratingA - ratingB + 0.3) / 2.5)，
+            // 0.3 ≈ 高种子主场优势补偿（4/7 主场 × 1.0 评分点 × 权重），尺度与常规赛一致
+            const pA = logistic((ratings[a.id] - ratings[b.id] + 0.3) / 2.5);
             let wa = 0;
             for (let g = 0; g < 7; g++) { if (Math.random() < pA) wa++; if (wa === 4 || g - wa + 1 === 4) break; }
             return wa === 4 ? a : b;
@@ -2509,6 +2549,18 @@ const App = (() => {
         let lastPct = -1;
         isFastSimming = true;
         pendingBlockbusters = [];
+        // 修复 v12：原无条件提示"进入季后赛"——未进前8时误导玩家；改为按实际排名提示
+        const seasonEndToast = (r) => {
+            const myTeam = state.teams.find(t => t.id === state.manager.teamId);
+            const confName = myTeam.conf === "East" ? "东部" : "西部";
+            const confStand = myTeam.conf === "East" ? state.standings.east : state.standings.west;
+            const myRank = confStand.findIndex(s => s.teamId === state.manager.teamId) + 1;
+            if (myRank > 0 && myRank <= 8) {
+                toast(`常规赛结束：${r.win}胜${r.loss}负（${confName}第${myRank}），进入季后赛 🏆`, "gold");
+            } else {
+                toast(`常规赛结束：${r.win}胜${r.loss}负（${confName}第${myRank}），未能进入季后赛，明年再战 💪`, "warning");
+            }
+        };
         function tick() {
             const t0 = Date.now();
             // 每个时间片最多跑 50ms，避免阻塞 UI
@@ -2540,14 +2592,14 @@ const App = (() => {
                         startPlayoffs();
                         autoSave();
                         renderAll();
-                        toast(`常规赛结束：${r.win}胜${r.loss}负，进入季后赛 🏆`, "gold");
+                        seasonEndToast(r);
                     }, 100);
                 } else {
                     presentSeasonAwards(); // 再开奖项弹窗（会被保留，玩家可查看）
                     startPlayoffs();
                     autoSave();
                     renderAll();
-                    toast(`常规赛结束：${r.win}胜${r.loss}负，进入季后赛 🏆`, "gold");
+                    seasonEndToast(r);
                 }
             }
         }
@@ -2612,7 +2664,7 @@ const App = (() => {
                 const pick = DraftEngine.aiPick(available, roster);
                 if (pick) {
                     if (state.teamsPlayers[owner]) makeRoomForRookie(owner);
-                    DraftEngine.assignRookieToTeam(pick, owner, state.draftPick + 1);
+                    DraftEngine.assignRookieToTeam(pick, owner, state.draftPick + 1, state.teamsPlayers[owner] || []);
                     if (state.teamsPlayers[owner]) state.teamsPlayers[owner].push(pick);
                     state.players.push(pick);
                 }
@@ -2709,7 +2761,7 @@ const App = (() => {
             const pick = DraftEngine.aiPick(available, roster);
             if (pick) {
                 makeRoomForRookie(owner);
-                DraftEngine.assignRookieToTeam(pick, owner, state.draftPick + 1);
+                DraftEngine.assignRookieToTeam(pick, owner, state.draftPick + 1, roster);
                 roster.push(pick);
                 state.players.push(pick);
                 if (state.draftPick < 5) toast(`#${state.draftPick+1} ${teamAbbr(owner)} 选中 ${pick.n}`, "");
@@ -2725,7 +2777,7 @@ const App = (() => {
         if (!rookie) return;
         if (state.draftOrder[state.draftPick] !== myId) { toast("这不是你的顺位", "error"); return; }
         makeRoomForRookie(myId);
-        DraftEngine.assignRookieToTeam(rookie, myId, state.draftPick + 1);
+        DraftEngine.assignRookieToTeam(rookie, myId, state.draftPick + 1, state.teamsPlayers[myId]);
         state.teamsPlayers[myId].push(rookie);
         state.players.push(rookie);
         toast(`你用 #${state.draftPick+1} 顺位选中 ${rookie.n}!`, "success");
@@ -2763,7 +2815,7 @@ const App = (() => {
             const pick = DraftEngine.aiPick(available, roster);
             if (pick) {
                 makeRoomForRookie(owner);
-                DraftEngine.assignRookieToTeam(pick, owner, state.draftPick + 1);
+                DraftEngine.assignRookieToTeam(pick, owner, state.draftPick + 1, roster);
                 roster.push(pick);
                 state.players.push(pick);
             }
