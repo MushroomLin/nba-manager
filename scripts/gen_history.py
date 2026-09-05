@@ -31,6 +31,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from zh_names import ZH_HIST
 from zh_names_extra import compose_zh
+from zh_names_full import compose_zh_full
 
 import pandas as pd
 
@@ -428,8 +429,8 @@ def main():
     for pid, fy in from_year.items():
         info = reg.get(pid, {})
         name = info.get("name") or name_by_id.get(pid, "")
-        # 中文名: name_map(id→zh) → ZH_HIST(英文名) → compose_zh(名/姓组件组合)
-        zh = id2zh.get(pid) or ZH_HIST.get(name) or compose_zh(name)
+        # 中文名: name_map(id→zh) → ZH_HIST(英文名) → compose_zh(名/姓组件组合) → compose_zh_full(全量补录)
+        zh = id2zh.get(pid) or ZH_HIST.get(name) or compose_zh(name) or compose_zh_full(name)
         fy_final = info.get("from_year") or fy
         # index 的 from_year 可能比数据早（生涯早于1996），取 info 优先
         ly = last_year[pid]
